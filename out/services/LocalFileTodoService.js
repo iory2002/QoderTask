@@ -105,6 +105,25 @@ class LocalFileTodoService {
         const filtered = todos.filter(t => t.id !== id);
         this.writeTodos(filtered);
     }
+    async reorder(orderedIds) {
+        const todos = this.readTodos();
+        const map = new Map(todos.map(t => [t.id, t]));
+        const reordered = [];
+        // 按新顺序排列
+        for (const id of orderedIds) {
+            const todo = map.get(id);
+            if (todo) {
+                reordered.push(todo);
+                map.delete(id);
+            }
+        }
+        // 不在新顺序中的项追加到末尾（安全兼容）
+        for (const todo of map.values()) {
+            reordered.push(todo);
+        }
+        this.writeTodos(reordered);
+        return reordered;
+    }
 }
 exports.LocalFileTodoService = LocalFileTodoService;
 //# sourceMappingURL=LocalFileTodoService.js.map

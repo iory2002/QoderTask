@@ -64,6 +64,10 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
                         await vscode.env.openExternal(vscode.Uri.parse(message.url));
                     }
                     break;
+                case 'reorderTodos':
+                    await this._todoService.reorder(message.orderedIds);
+                    await this._refreshTodos();
+                    break;
             }
         });
 
@@ -164,9 +168,25 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             padding: 8px 6px;
             border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,0.2));
             transition: background 0.15s;
+            position: relative;
         }
         .todo-item:hover {
             background: var(--vscode-list-hoverBackground);
+        }
+        .todo-item.dragging {
+            opacity: 0.4;
+        }
+        /* 插入指示线：上半区=插入到该项之前，下半区=插入到该项之后 */
+        /* 整行高亮 + inset 纯色线，不依赖主题变量，保证可见 */
+        .todo-item.drag-over-before,
+        .todo-item.drag-over-after {
+            background-color: rgba(0, 127, 212, 0.25) !important;
+        }
+        .todo-item.drag-over-before {
+            box-shadow: inset 0 3px 0 0 #007fd4;
+        }
+        .todo-item.drag-over-after {
+            box-shadow: inset 0 -3px 0 0 #007fd4;
         }
         .todo-item.completed .todo-title {
             text-decoration: line-through;
@@ -279,6 +299,20 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             background: var(--vscode-errorForeground);
             color: #fff;
         }
+        /* 错误横幅 */
+        .err-banner {
+            position: sticky;
+            bottom: 0;
+            background: var(--vscode-errorForeground);
+            color: #fff;
+            font-size: 12px;
+            padding: 4px 8px;
+            margin-top: 8px;
+            border-radius: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
     </style>
 </head>
 <body>
@@ -300,7 +334,19 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
 
     <div class="context-menu" id="contextMenu"></div>
 
+    <div class="err-banner" id="errBanner" style="display:none;"></div>
+
     <script>
+        // 调试：捕获 JS 错误并显示在面板顶部（便于排查 webview 侧问题）
+        window.onerror = function(msg, source, line, col) {
+            const banner = document.getElementById('errBanner');
+            if (banner) {
+                banner.textContent = 'JS Error: ' + msg + ' @' + line + ':' + col;
+                banner.style.display = 'block';
+            }
+            return false;
+        };
+
         const vscode = acquireVsCodeApi();
         let todos = [];
 
@@ -404,7 +450,7 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             statsText.textContent = done + ' / ' + todos.length + ' 已完成';
 
             list.innerHTML = todos.map(todo => 
-                '<li class="todo-item ' + (todo.completed ? 'completed' : '') + '" id="todo-' + todo.id + '" data-id="' + todo.id + '" data-url="' + (todo.url ? escapeHtml(todo.url) : '') + '">' +
+                '<li class="todo-item ' + (todo.completed ? 'completed' : '') + '" id="todo-' + todo.id + '" data-id="' + todo.id + '" data-url="' + (todo.url ? escapeHtml(todo.url) : '') + '" draggable="true">' +
                     '<input type="checkbox" class="todo-checkbox" ' + (todo.completed ? 'checked' : '') + ' onchange="toggleTodo(\\'' + todo.id + '\\', ' + todo.completed + ')" />' +
                     '<div class="todo-content">' +
                         '<div class="todo-title">' + escapeHtml(todo.title) + '</div>' +
@@ -420,6 +466,73 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
         // Enter 键快速添加
         document.getElementById('todoTitle').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') { addTodo(); }
+        });
+
+        // ========== 拖拽排序 ==========
+        let draggedId = null;
+        const todoListEl = document.getElementById('todoList');
+
+        function clearDragStyles() {
+            document.querySelectorAll('.todo-item.drag-over-before, .todo-item.drag-over-after').forEach(el => el.classList.remove('drag-over-before', 'drag-over-after'));
+            document.querySelectorAll('.todo-item.dragging').forEach(el => el.classList.remove('dragging'));
+        }
+
+        todoListEl.addEventListener('dragstart', function(e) {
+            // 从输入框/按钮发起的拖拽直接取消，保留文本选择与编辑交互
+            if (e.target.closest('input, textarea, button')) {
+                e.preventDefault();
+                return;
+            }
+            const li = e.target.closest('.todo-item');
+            if (!li) { return; }
+            draggedId = li.dataset.id;
+            li.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            // Chromium 必需：不 setData 则拖拽 ghost 不显示、dragover/drop 不触发
+            e.dataTransfer.setData('text/plain', 'todo:' + draggedId);
+        });
+
+        todoListEl.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const li = e.target.closest('.todo-item');
+            // 清除上一处指示线
+            document.querySelectorAll('.todo-item.drag-over-before, .todo-item.drag-over-after').forEach(el => el.classList.remove('drag-over-before', 'drag-over-after'));
+            if (!li || li.dataset.id === draggedId) { return; }
+            // 鼠标在目标项上半区=插入之前，下半区=插入之后
+            const rect = li.getBoundingClientRect();
+            const isAfter = (e.clientY - rect.top) > rect.height / 2;
+            li.classList.add(isAfter ? 'drag-over-after' : 'drag-over-before');
+        });
+
+        todoListEl.addEventListener('drop', function(e) {
+            e.preventDefault();
+            const li = e.target.closest('.todo-item');
+            if (!li || !draggedId || li.dataset.id === draggedId) {
+                clearDragStyles();
+                draggedId = null;
+                return;
+            }
+            const fromIndex = todos.findIndex(t => t.id === draggedId);
+            let toIndex = todos.findIndex(t => t.id === li.dataset.id);
+            if (fromIndex === -1 || toIndex === -1) { return; }
+            // 鼠标在目标项下半区：插入到目标项之后
+            if (li.classList.contains('drag-over-after')) { toIndex += 1; }
+            // 向下拖动时补偿索引，保持插入语义
+            if (fromIndex < toIndex) { toIndex -= 1; }
+            // 移动数组元素
+            const moved = todos.splice(fromIndex, 1)[0];
+            todos.splice(toIndex, 0, moved);
+            clearDragStyles();
+            draggedId = null;
+            renderTodos();
+            // 通知 Extension 持久化新顺序
+            vscode.postMessage({ command: 'reorderTodos', orderedIds: todos.map(t => t.id) });
+        });
+
+        todoListEl.addEventListener('dragend', function() {
+            clearDragStyles();
+            draggedId = null;
         });
 
         // ========== 右键菜单 ==========
