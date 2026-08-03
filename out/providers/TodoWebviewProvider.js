@@ -1,6 +1,40 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TodoWebviewProvider = void 0;
+const vscode = __importStar(require("vscode"));
 /**
  * WebView 提供者：负责渲染侧边栏面板并与 WebView 通信
  */
@@ -45,6 +79,11 @@ class TodoWebviewProvider {
                 case 'deleteTodo':
                     await this._todoService.delete(message.id);
                     await this._refreshTodos();
+                    break;
+                case 'openUrl':
+                    if (message.url) {
+                        await vscode.env.openExternal(vscode.Uri.parse(message.url));
+                    }
                     break;
             }
         });
@@ -223,6 +262,40 @@ class TodoWebviewProvider {
             font-size: 13px;
             margin-bottom: 4px;
         }
+
+        /* 右键菜单 */
+        .context-menu {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            min-width: 160px;
+            background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+            color: var(--vscode-menu-foreground, var(--vscode-foreground));
+            border: 1px solid var(--vscode-menu-border, rgba(128,128,128,0.3));
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            padding: 4px 0;
+            font-size: 13px;
+        }
+        .context-menu.visible { display: block; }
+        .context-menu-item {
+            padding: 5px 14px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .context-menu-item:hover {
+            background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+            color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+        }
+        .context-menu-separator {
+            height: 1px;
+            background: var(--vscode-menu-separatorBackground, rgba(128,128,128,0.3));
+            margin: 4px 0;
+        }
+        .context-menu-item.danger:hover {
+            background: var(--vscode-errorForeground);
+            color: #fff;
+        }
     </style>
 </head>
 <body>
@@ -241,6 +314,8 @@ class TodoWebviewProvider {
     <div class="empty-state" id="emptyState" style="display:none;">
         暂无待办事项，添加一个吧！
     </div>
+
+    <div class="context-menu" id="contextMenu"></div>
 
     <script>
         const vscode = acquireVsCodeApi();
@@ -346,7 +421,7 @@ class TodoWebviewProvider {
             statsText.textContent = done + ' / ' + todos.length + ' 已完成';
 
             list.innerHTML = todos.map(todo => 
-                '<li class="todo-item ' + (todo.completed ? 'completed' : '') + '" id="todo-' + todo.id + '">' +
+                '<li class="todo-item ' + (todo.completed ? 'completed' : '') + '" id="todo-' + todo.id + '" data-id="' + todo.id + '" data-url="' + (todo.url ? escapeHtml(todo.url) : '') + '">' +
                     '<input type="checkbox" class="todo-checkbox" ' + (todo.completed ? 'checked' : '') + ' onchange="toggleTodo(\\'' + todo.id + '\\', ' + todo.completed + ')" />' +
                     '<div class="todo-content">' +
                         '<div class="todo-title">' + escapeHtml(todo.title) + '</div>' +
@@ -362,6 +437,80 @@ class TodoWebviewProvider {
         // Enter 键快速添加
         document.getElementById('todoTitle').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') { addTodo(); }
+        });
+
+        // ========== 右键菜单 ==========
+        const contextMenu = document.getElementById('contextMenu');
+        let currentTodoId = null;
+
+        function showContextMenu(e, todo) {
+            e.preventDefault();
+            currentTodoId = todo.id;
+            let items = '';
+            if (todo.url) {
+                items += '<div class="context-menu-item" data-action="openUrl">在浏览器中打开</div>';
+            }
+            items += '<div class="context-menu-item" data-action="copy">复制标题</div>';
+            items += '<div class="context-menu-item" data-action="toggle">' + (todo.completed ? '取消完成' : '标记完成') + '</div>';
+            items += '<div class="context-menu-item" data-action="edit">编辑</div>';
+            items += '<div class="context-menu-separator"></div>';
+            items += '<div class="context-menu-item danger" data-action="delete">删除</div>';
+            contextMenu.innerHTML = items;
+            contextMenu.classList.add('visible');
+            // 定位（避免超出边界）
+            const menuW = 170, menuH = contextMenu.offsetHeight || 150;
+            let x = e.clientX, y = e.clientY;
+            if (x + menuW > window.innerWidth) { x = window.innerWidth - menuW; }
+            if (y + menuH > window.innerHeight) { y = window.innerHeight - menuH; }
+            contextMenu.style.left = x + 'px';
+            contextMenu.style.top = y + 'px';
+        }
+
+        function hideContextMenu() {
+            contextMenu.classList.remove('visible');
+        }
+
+        // 在列表上右键待办项时弹出菜单
+        document.getElementById('todoList').addEventListener('contextmenu', function(e) {
+            const li = e.target.closest('.todo-item');
+            if (!li) { return; }
+            const todo = todos.find(t => t.id === li.dataset.id);
+            if (todo) { showContextMenu(e, todo); }
+        });
+
+        // 菜单项点击
+        contextMenu.addEventListener('click', function(e) {
+            const action = e.target.dataset.action;
+            if (!action) { return; }
+            const todo = todos.find(t => t.id === currentTodoId);
+            hideContextMenu();
+            if (!todo) { return; }
+            switch (action) {
+                case 'openUrl':
+                    vscode.postMessage({ command: 'openUrl', url: todo.url });
+                    break;
+                case 'copy':
+                    navigator.clipboard.writeText(todo.title);
+                    break;
+                case 'toggle':
+                    toggleTodo(todo.id, todo.completed);
+                    break;
+                case 'edit':
+                    startEdit(todo.id);
+                    break;
+                case 'delete':
+                    deleteTodo(todo.id);
+                    break;
+            }
+        });
+
+        // 点击其他区域或滚动时关闭菜单
+        document.addEventListener('click', function(e) {
+            if (!contextMenu.contains(e.target)) { hideContextMenu(); }
+        });
+        window.addEventListener('scroll', hideContextMenu);
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') { hideContextMenu(); }
         });
     </script>
 </body>

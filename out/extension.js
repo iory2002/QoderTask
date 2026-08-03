@@ -51,16 +51,16 @@ function activate(context) {
         context.subscriptions.push(vscode.window.registerWebviewViewProvider(TodoWebviewProvider_1.TodoWebviewProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } }));
         // 首次激活时自动加载演示数据
         const demoData = [
-            { title: '完成 Q3 季度项目汇报 PPT', description: '' },
-            { title: 'Review 团队提交的 PR #42 和 #43', description: '重点检查 auth 模块' },
-            { title: '修复登录页面在 Safari 下的样式兼容问题', description: '用户反馈按钮错位' },
+            { title: '完成 Q3 季度项目汇报 PPT', description: '', url: 'https://jira.example.com/browse/DEMO-101' },
+            { title: 'Review 团队提交的 PR #42 和 #43', description: '重点检查 auth 模块', url: 'https://jira.example.com/browse/DEMO-102' },
+            { title: '修复登录页面在 Safari 下的样式兼容问题', description: '用户反馈按钮错位', url: 'https://jira.example.com/browse/DEMO-103' },
             { title: '编写用户模块的单元测试', description: '覆盖率提升到 80%' },
-            { title: '和产品经理确认 v2.5 需求变更细节', description: '' },
+            { title: '和产品经理确认 v2.5 需求变更细节', description: '', url: 'https://jira.example.com/browse/DEMO-105' },
             { title: '更新 API 文档', description: '补充新增的 WebSocket 接口说明' },
-            { title: '优化首页加载速度', description: '目标 < 2s' },
+            { title: '优化首页加载速度', description: '目标 < 2s', url: 'https://jira.example.com/browse/DEMO-107' },
             { title: '准备周五的技术分享', description: 'React Server Components 实践' },
             { title: '清理数据库中的过期测试数据', description: '' },
-            { title: '配置 CI/CD 流水线的自动化部署流程', description: '使用 GitHub Actions' },
+            { title: '配置 CI/CD 流水线的自动化部署流程', description: '使用 GitHub Actions', url: 'https://jira.example.com/browse/DEMO-110' },
         ];
         service.getAll().then(todos => {
             if (todos.length === 0) {

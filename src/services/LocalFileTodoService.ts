@@ -53,6 +53,9 @@ export class LocalFileTodoService implements TodoService {
             createdAt: now,
             updatedAt: now,
         };
+        if (input.url) {
+            newTodo.url = input.url;
+        }
         todos.push(newTodo);
         this.writeTodos(todos);
         return newTodo;
