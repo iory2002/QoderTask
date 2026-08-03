@@ -1,0 +1,73 @@
+{
+  "name": "todo-panel",
+  "displayName": "Todo Panel",
+  "description": "A sidebar panel for managing your to-do items",
+  "version": "0.0.1",
+  "publisher": "your-name",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "todo-panel",
+          "title": "Todo Panel",
+          "icon": "$(checklist)"
+        }
+      ]
+    },
+    "views": {
+      "todo-panel": [
+        {
+          "type": "webview",
+          "id": "todoPanel.webview",
+          "name": "My Todos"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "todoPanel.addTodo",
+        "title": "Add Todo",
+        "icon": "$(add)"
+      },
+      {
+        "command": "todoPanel.refresh",
+        "title": "Refresh Todos",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "todoPanel.loadDemo",
+        "title": "Todo Panel: Load Demo Data"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "todoPanel.addTodo",
+          "when": "view == todoPanel.webview",
+          "group": "navigation"
+        },
+        {
+          "command": "todoPanel.refresh",
+          "when": "view == todoPanel.webview",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}
