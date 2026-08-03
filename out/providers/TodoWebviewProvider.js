@@ -316,20 +316,6 @@ class TodoWebviewProvider {
             background: var(--vscode-errorForeground);
             color: #fff;
         }
-        /* 错误横幅 */
-        .err-banner {
-            position: sticky;
-            bottom: 0;
-            background: var(--vscode-errorForeground);
-            color: #fff;
-            font-size: 12px;
-            padding: 4px 8px;
-            margin-top: 8px;
-            border-radius: 2px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
     </style>
 </head>
 <body>
@@ -351,19 +337,7 @@ class TodoWebviewProvider {
 
     <div class="context-menu" id="contextMenu"></div>
 
-    <div class="err-banner" id="errBanner" style="display:none;"></div>
-
     <script>
-        // 调试：捕获 JS 错误并显示在面板顶部（便于排查 webview 侧问题）
-        window.onerror = function(msg, source, line, col) {
-            const banner = document.getElementById('errBanner');
-            if (banner) {
-                banner.textContent = 'JS Error: ' + msg + ' @' + line + ':' + col;
-                banner.style.display = 'block';
-            }
-            return false;
-        };
-
         const vscode = acquireVsCodeApi();
         let todos = [];
 
