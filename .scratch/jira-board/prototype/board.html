@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Jira Board 原型 — 布局与密度</title>
+<style>
+  :root { --gap: 12px; --card-w: 288px; --bg: #f7f7f8; --line: #e3e3e6; --muted: #6b7280; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: #1f2328; }
+
+  /* ---------- 顶栏 ---------- */
+  header { position: sticky; top: 0; z-index: 20; background: #fff; border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .brand { font-weight: 600; margin-right: 6px; }
+  .brand small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip-btn { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+  .chip-btn[aria-pressed="true"] { background: #1f2328; color: #fff; border-color: #1f2328; }
+  .spacer { flex: 1 1 auto; }
+  .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
+  .widths { display: flex; gap: 4px; }
+  .ghost { border: 1px dashed var(--muted); background: #fff; border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; color: var(--muted); }
+  .stamp { font-size: 12px; color: var(--muted); }
+
+  /* ---------- 看板 ---------- */
+  #board { display: flex; gap: var(--gap); padding: 14px; align-items: flex-start; margin: 0 auto; transition: max-width .2s; max-width: 1400px; }
+  .col { flex: 1 1 0; min-width: 0; background: #eceef1; border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 220px; }
+  .col.dragover { outline: 2px dashed #3A5A7F; outline-offset: -2px; background: #e4e8ee; }
+  .col.reject { outline: 2px dashed #EF4444; outline-offset: -2px; }
+  .col h2 { margin: 0; font-size: 12px; font-weight: 600; color: #444a55; display: flex; justify-content: space-between; padding: 2px 4px 6px; border-bottom: 1px solid #dcdfe4; text-transform: none; }
+  .col h2 span { color: var(--muted); font-weight: 400; }
+
+  /* ---------- 卡片 ---------- */
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; cursor: grab; box-shadow: 0 1px 1px rgba(0,0,0,.03); }
+  .card:active { cursor: grabbing; }
+  .card.dragging { opacity: .45; }
+  .row1 { display: flex; align-items: center; gap: 6px; }
+  .type { width: 14px; height: 14px; border-radius: 3px; background: #2f9e44; color: #fff; font-size: 10px; line-height: 14px; text-align: center; flex: none; }
+  .type.bug { background: #d6336c; }
+  .type.story { background: #2f9e44; }
+  .type.task { background: #1c7ed6; }
+  .key { font-weight: 600; font-size: 12px; color: #1c7ed6; text-decoration: none; }
+  .avatar { margin-left: auto; width: 18px; height: 18px; border-radius: 50%; background: #adb5bd; color: #fff; font-size: 10px; line-height: 18px; text-align: center; flex: none; }
+  .title { margin: 5px 0 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .row2 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .prio { color: #e03131; font-size: 11px; }
+  .prio.low { color: #868e96; }
+  .epic { background: #f6c85f; color: #5b4300; border-radius: 3px; font-size: 11px; padding: 1px 6px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmt { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+  /* ---------- 阶段徽章 ---------- */
+  .stages { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+  .stage { font-size: 11px; border-radius: 3px; padding: 1px 6px; border: 1px solid transparent; }
+  .s-none   { background: #f1f3f5; color: #6b7280; }
+  .s-mr     { background: #3A5A7F; color: #fff; }
+  .s-appr   { background: #7C3AED; color: #fff; }
+  .s-merged { background: #F59E0B; color: #3d2800; }
+  .s-built  { background: #10B981; color: #fff; }
+  .s-fail   { background: #EF4444; color: #fff; }
+  .s-unk    { background: #fff; color: #b42318; border-color: #EF4444; border-style: dashed; }
+
+  /* ---------- 弹窗 ---------- */
+  dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; width: 460px; max-width: 92vw; box-shadow: 0 10px 40px rgba(0,0,0,.18); }
+  dialog::backdrop { background: rgba(20,24,32,.35); }
+  .dlg-head { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  .dlg-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .dlg-foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .field input, .field select, .field textarea { width: 100%; padding: 6px 8px; border: 1px solid #cfd4db; border-radius: 5px; font: inherit; }
+  .req { color: #EF4444; }
+  .warn { background: #fff7e6; border: 1px solid #f5c06a; border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+  .warn b { color: #8a5a00; }
+  .btn { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; }
+  .btn.primary { background: #1c7ed6; border-color: #1c7ed6; color: #fff; }
+  .btn.danger { background: #fff; border-color: #EF4444; color: #EF4444; }
+  .hint { font-size: 12px; color: var(--muted); }
+  #toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: #1f2328; color: #fff; padding: 8px 14px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50; }
+  #toast.on { opacity: .95; }
+  @media (max-width: 720px) { #board { flex-direction: column; } .col { width: 100%; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">Jira Board <small>原型 · 假数据 · 5 列 · 不分行</small></div>
+  <div class="chips" id="projects">
+    <button class="chip-btn" aria-pressed="true" data-p="ALL">全部</button>
+    <button class="chip-btn" aria-pressed="true" data-p="MAGR3">MAGR3</button>
+    <button class="chip-btn" aria-pressed="true" data-p="NEX">NEX</button>
+    <button class="chip-btn" aria-pressed="true" data-p="NEX2">NEX2</button>
+    <button class="chip-btn" aria-pressed="true" data-p="IB">IB</button>
+  </div>
+  <label class="toggle"><input type="checkbox" id="mine" checked> 只看我的</label>
+  <div class="spacer"></div>
+  <span class="stamp" id="stamp">刚刚同步 · 6 张</span>
+  <div class="widths">
+    <button class="ghost" data-w="600">600</button>
+    <button class="ghost" data-w="900">900</button>
+    <button class="ghost" data-w="1400">1400</button>
+  </div>
+  <button class="ghost" id="demoGate">预览：软闸门</button>
+  <button class="ghost" id="demoForm">预览：transition 表单</button>
+</header>
+
+<main id="board"></main>
+
+<!-- 软闸门 -->
+<dialog id="dlgGate">
+  <div class="dlg-head">推到 In Test 前，检测未通过</div>
+  <div class="dlg-body">
+    <div class="warn"><b>缺少 2 项：</b><br>· 目标分支上还没有关联 MR 合入记录<br>· 没有找到该合入的构建结果</div>
+    <div class="hint">你仍然可以推进，但这张卡在 Jira 里会变成“测试中”而代码可能还没进主干。</div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" data-close>取消</button>
+    <button class="btn danger" data-close>仍然推进</button>
+  </div>
+</dialog>
+
+<!-- transition 表单 -->
+<dialog id="dlgForm">
+  <div class="dlg-head">Send to Test · NEX2-776</div>
+  <div class="dlg-body">
+    <div class="hint">表单字段来自该 issue 的 transitions 元数据；值已按 issue 当前字段预填，一路回车即可。</div>
+    <div class="field"><label>Summary <span class="req">*</span></label><input value="[enabler]Add new TP component infrastructure (GROUP/CARD resource)"></div>
+    <div class="field"><label>Fix Version/s</label><input value="R2.5.0" placeholder="（预填自当前值）"></div>
+    <div class="field"><label>Assignee</label><input value="Zhuang, Yifan"></div>
+    <div class="field"><label>评论（可选，自动附 MR / build 链接）</label><textarea rows="2">MR !482 merged → 1a2b3c4 · build #1727 SUCCESS</textarea></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" data-close>取消</button>
+    <button class="btn primary" data-close>提交并移动到 In Test</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const COLUMNS = ['To Do', 'In Progress', 'In Code Review', 'In Test', 'Done'];
+
+// 真实 key/标题/状态；MR 与 build 是编的
+const CARDS = [
+  { key: 'NEX2-777', project: 'NEX2', col: 'To Do', mine: true, type: 'story', title: 'Redesign Static 3D TP page layout with Routine button, render cards, Edit Light, and', epic: 'OB-Workflow', prio: 'high', cmt: 3, stage: 'none' },
+  { key: 'NEX2-904', project: 'NEX2', col: 'In Progress', mine: true, type: 'task', title: 'Merge on-spot configuration', epic: '', prio: 'high', cmt: 0, stage: 'none' },
+  { key: 'NEX2-776', project: 'NEX2', col: 'In Progress', mine: true, type: 'story', title: '[enabler]Add new TP component infrastructure (GROUP/CARD resource', epic: 'OB-Workflow', prio: 'high', cmt: 2, stage: 'mr' },
+  { key: 'NEX2-765', project: 'NEX2', col: 'In Progress', mine: true, type: 'bug', title: 'Bonus Area displays blank after finishing Easy3D data acquisition', epic: 'OB-Workflow', prio: 'mid', cmt: 5, stage: 'appr' },
+  { key: 'NEX2-756', project: 'NEX2', col: 'In Progress', mine: true, type: 'bug', title: 'The icon for the new probe on Nexus R2 is not displayed in the', epic: '', prio: 'high', cmt: 1, stage: 'merged' },
+  { key: 'NEX2-783', project: 'NEX2', col: 'Done', mine: true, type: 'task', title: '[Feasibility Study] Investigate TouchPanelTabGrids.qml delegate type dispatch', epic: 'OB-Workflow', prio: 'low', cmt: 3, stage: 'built' },
+  { key: 'NEX2-802', project: 'NEX2', col: 'In Code Review', mine: false, type: 'bug', title: 'Probe name overlaps with depth ruler when zooming', epic: '', prio: 'high', cmt: 0, stage: 'appr' },
+  { key: 'MAGR3-6363', project: 'MAGR3', col: 'In Test', mine: false, type: 'task', title: 'Verify acoustic output table for 4D mode', epic: 'Field', prio: 'mid', cmt: 4, stage: 'built' },
+  { key: 'MAGR3-6370', project: 'MAGR3', col: 'In Progress', mine: false, type: 'bug', title: 'Thermal index label clipped in Japanese locale', epic: '', prio: 'mid', cmt: 1, stage: 'mr' },
+  { key: 'NEX-2101', project: 'NEX', col: 'To Do', mine: false, type: 'story', title: 'Expose service firmware version over AppAPI', epic: 'Nexus core', prio: 'low', cmt: 0, stage: 'none' },
+  { key: 'IB-1180', project: 'IB', col: 'In Code Review', mine: false, type: 'task', title: 'Bundle probe calibration data into install package', epic: '', prio: 'mid', cmt: 2, stage: 'appr' },
+  { key: 'IB-1172', project: 'IB', col: 'Done', mine: false, type: 'bug', title: 'Install package fails on Win11 24H2', epic: '', prio: 'high', cmt: 6, stage: 'fail' }
+];
+
+const STAGE = {
+  none:   { cls: 's-none',   text: '未提交' },
+  mr:     { cls: 's-mr',     text: 'MR 待审' },
+  appr:   { cls: 's-appr',   text: '已 Approve 待合入' },
+  merged: { cls: 's-merged', text: '已合入待构建' },
+  built:  { cls: 's-built',  text: '已构建' },
+  fail:   { cls: 's-built',  text: '已构建' }
+};
+
+const state = { projects: new Set(['MAGR3', 'NEX', 'NEX2', 'IB']), mine: true };
+let dragKey = null;
+
+function visible(card) {
+  return state.projects.has(card.project) && (!state.mine || card.mine);
+}
+
+function cardEl(card, colName) {
+  const el = document.createElement('article');
+  el.className = 'card';
+  el.draggable = true;
+  el.dataset.key = card.key;
+  el.dataset.col = colName;
+  const st = STAGE[card.stage];
+  const fail = card.stage === 'fail' ? '<span class="stage s-fail">Build failed</span>' : '';
+  el.innerHTML =
+    '<div class="row1"><span class="type ' + card.type + '">' + card.type[0].toUpperCase() + '</span>' +
+    '<a class="key" href="#">' + card.key + '</a>' +
+    '<span class="avatar">' + (card.mine ? 'Z' : 'M') + '</span></div>' +
+    '<div class="title">' + card.title + '</div>' +
+    '<div class="row2"><span class="prio ' + (card.prio === 'low' ? 'low' : '') + '">▲</span>' +
+    (card.epic ? '<span class="epic">' + card.epic + '</span>' : '') +
+    (card.cmt ? '<span class="cmt">💬 ' + card.cmt + '</span>' : '') + '</div>' +
+    '<div class="stages"><span class="stage ' + st.cls + '">' + st.text + '</span>' + fail + '</div>';
+  el.addEventListener('dragstart', (e) => {
+    dragKey = card.key;
+    el.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  el.addEventListener('dragend', () => { el.classList.remove('dragging'); dragKey = null; });
+  return el;
+}
+
+function render() {
+  const board = document.getElementById('board');
+  board.innerHTML = '';
+  let shown = 0;
+  for (const name of COLUMNS) {
+    const col = document.createElement('section');
+    col.className = 'col';
+    const cards = CARDS.filter((c) => c.col === name && visible(c));
+    shown += cards.length;
+    col.innerHTML = '<h2>' + name + '<span>' + cards.length + '</span></h2>';
+    cards.forEach((c) => col.appendChild(cardEl(c, name)));
+
+    col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('dragover'); });
+    col.addEventListener('dragleave', () => { col.classList.remove('dragover', 'reject'); });
+    col.addEventListener('drop', (e) => {
+      e.preventDefault();
+      col.classList.remove('dragover');
+      const card = CARDS.find((c) => c.key === dragKey);
+      if (!card || card.col === name) return;
+      const from = COLUMNS.indexOf(card.col), to = COLUMNS.indexOf(name);
+      if (to < from) { toast('看板不支持回退：' + card.key + ' 需要回退请到 Jira 网页操作'); return; }
+      if (to - from > 1) { toast(card.key + ' 在 ' + card.col + '，只能先推到 ' + COLUMNS[from + 1]); return; }
+      if (name === 'In Test' && card.stage !== 'built' && card.stage !== 'merged') {
+        document.getElementById('dlgGate').showModal();
+      } else {
+        document.getElementById('dlgForm').showModal();
+      }
+    });
+    board.appendChild(col);
+  }
+  document.getElementById('stamp').textContent = '刚刚同步 · ' + shown + ' 张';
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('on'), 2600);
+}
+
+document.getElementById('projects').addEventListener('click', (e) => {
+  const btn = e.target.closest('.chip-btn');
+  if (!btn) return;
+  const p = btn.dataset.p;
+  if (p === 'ALL') {
+    const on = state.projects.size < 4;
+    state.projects = on ? new Set(['MAGR3', 'NEX', 'NEX2', 'IB']) : new Set();
+    document.querySelectorAll('#projects .chip-btn').forEach((b) => {
+      if (b.dataset.p === 'ALL') b.setAttribute('aria-pressed', String(on));
+      else b.setAttribute('aria-pressed', String(on));
+    });
+  } else {
+    if (state.projects.has(p)) state.projects.delete(p); else state.projects.add(p);
+    btn.setAttribute('aria-pressed', String(state.projects.has(p)));
+    document.querySelector('#projects .chip-btn[data-p="ALL"]').setAttribute('aria-pressed', String(state.projects.size === 4));
+  }
+  render();
+});
+
+document.getElementById('mine').addEventListener('change', (e) => { state.mine = e.target.checked; render(); });
+document.querySelectorAll('.widths .ghost').forEach((b) => {
+  b.addEventListener('click', () => { document.getElementById('board').style.maxWidth = b.dataset.w + 'px'; });
+});
+document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
+document.getElementById('demoGate').addEventListener('click', () => document.getElementById('dlgGate').showModal());
+document.getElementById('demoForm').addEventListener('click', () => document.getElementById('dlgForm').showModal());
+
+render();
+</script>
+</body>
+</html>

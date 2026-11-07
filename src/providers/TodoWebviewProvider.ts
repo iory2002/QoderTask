@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { TodoService } from '../services/TodoService';
 import { Todo } from '../models/Todo';
+import { JiraService } from '../services/JiraService';
+import { GitLabService } from '../services/GitLabService';
 
 /**
  * WebView 提供者：负责渲染侧边栏面板并与 WebView 通信
@@ -12,7 +14,9 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
-        private readonly _todoService: TodoService
+        private readonly _todoService: TodoService,
+        private readonly _jiraService: JiraService,
+        private readonly _gitlabService: GitLabService
     ) {}
 
     public resolveWebviewView(
@@ -64,9 +68,29 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
                         await vscode.env.openExternal(vscode.Uri.parse(message.url));
                     }
                     break;
+                case 'addToChat':
+                    if (message.title) {
+                        try {
+                            await vscode.commands.executeCommand('workbench.action.chat.open', {
+                                query: message.title,
+                                isPartialQuery: true,
+                            });
+                        } catch {
+                            // 不支持 chat 命令时，复制到剪贴板
+                            await vscode.env.clipboard.writeText(message.title);
+                            vscode.window.showInformationMessage('已复制标题到剪贴板，请粘贴到对话中');
+                        }
+                    }
+                    break;
                 case 'reorderTodos':
                     await this._todoService.reorder(message.orderedIds);
                     await this._refreshTodos();
+                    break;
+                case 'syncJira':
+                    await this._syncJira();
+                    break;
+                case 'syncGitLab':
+                    await this._syncGitLab();
                     break;
             }
         });
@@ -83,8 +107,86 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
         });
     }
 
+    /**
+     * 同步 Jira 数据：拉取当前 Sprint 任务 → 替换旧 Jira 项 → 刷新
+     */
+    private async _syncJira(): Promise<void> {
+        this._view?.webview.postMessage({ command: 'syncStart', source: 'jira' });
+        try {
+            const jiraItems = await this._jiraService.fetchMyCurrentSprintIssues();
+            if (jiraItems === null) {
+                await this._refreshTodos();
+                this._view?.webview.postMessage({ command: 'syncDone', source: 'jira', count: -1, info: 'Jira 未配置或无活跃 Sprint' });
+                return;
+            }
+            const service = this._todoService as any;
+            if (typeof service.syncFromJira === 'function') {
+                await service.syncFromJira(jiraItems);
+            }
+            await this._refreshTodos();
+            this._view?.webview.postMessage({ command: 'syncDone', source: 'jira', count: jiraItems.length });
+        } catch (err) {
+            console.error('Jira sync failed:', err);
+            vscode.window.showErrorMessage('Jira 同步失败: ' + (err as Error).message);
+            this._view?.webview.postMessage({ command: 'syncDone', source: 'jira', count: 0, error: (err as Error).message });
+        }
+    }
+
+    /**
+     * 同步 GitLab MR 数据：拉取与我相关的 MR → 替换旧 MR 项 → 刷新
+     */
+    private async _syncGitLab(): Promise<void> {
+        this._view?.webview.postMessage({ command: 'syncStart', source: 'gitlab' });
+        try {
+            const mrItems = await this._gitlabService.fetchMyMRs();
+            if (mrItems === null) {
+                await this._refreshTodos();
+                this._view?.webview.postMessage({ command: 'syncDone', source: 'gitlab', count: -1, info: 'GitLab 未配置' });
+                return;
+            }
+            const service = this._todoService as any;
+            if (typeof service.syncFromGitLab === 'function') {
+                await service.syncFromGitLab(mrItems);
+            }
+            await this._refreshTodos();
+            this._view?.webview.postMessage({ command: 'syncDone', source: 'gitlab', count: mrItems.length });
+        } catch (err) {
+            console.error('GitLab sync failed:', err);
+            vscode.window.showErrorMessage('GitLab 同步失败: ' + (err as Error).message);
+            this._view?.webview.postMessage({ command: 'syncDone', source: 'gitlab', count: 0, error: (err as Error).message });
+        }
+    }
+
     public async refresh(): Promise<void> {
         await this._refreshTodos();
+    }
+
+    /**
+     * 公开方法：由外部命令调用触发 Jira 同步
+     */
+    public async syncWithJira(): Promise<void> {
+        await this._syncJira();
+    }
+
+    /**
+     * 公开方法：由外部命令调用触发 GitLab 同步
+     */
+    public async syncWithGitLab(): Promise<void> {
+        await this._syncGitLab();
+    }
+
+    /**
+     * 公开方法：清除所有待办事项（带确认对话框）
+     */
+    public async clearAll(): Promise<void> {
+        const answer = await vscode.window.showWarningMessage(
+            '确定清除所有待办事项？此操作不可撤销。',
+            '清除', '取消'
+        );
+        if (answer === '清除') {
+            await this._todoService.clearAll();
+            await this._refreshTodos();
+        }
     }
 
     private _getHtmlContent(): string {
@@ -220,6 +322,23 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             margin-top: 4px;
             opacity: 0.7;
         }
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            line-height: 1.4;
+            vertical-align: middle;
+        }
+        .status-open { background: #3A5A7F; color: #fff; }
+        .status-in-progress { background: #FFD351; color: #2E4A1E; }
+        .status-in-test { background: #FFD351; color: #2E4A1E; }
+        .status-resolved { background: #10B981; color: #fff; }
+        .status-closed { background: #6B7280; color: #fff; }
+        .status-merged { background: #7C3AED; color: #fff; }
+        .status-default { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
         .btn-delete {
             background: none;
             border: none;
@@ -299,9 +418,130 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             background: var(--vscode-errorForeground);
             color: #fff;
         }
+
+        /* Jira 同步按钮 */
+        .sync-bar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+        .btn-sync {
+            flex: 1;
+            padding: 6px 10px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .btn-sync:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        .btn-sync:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .btn-sync .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .sync-status {
+            width: 100%;
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            white-space: nowrap;
+            text-align: center;
+            min-height: 0;
+        }
+        .sync-status:empty {
+            display: none;
+        }
+
+        /* 错误 banner */
+        .error-banner {
+            display: none;
+            background: #c0392b;
+            color: #000;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 6px 10px;
+            border-radius: 2px;
+            margin-bottom: 10px;
+            word-break: break-word;
+        }
+        .error-banner.visible {
+            display: block;
+        }
+
+        /* 过滤栏 */
+        .filter-bar {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+        .btn-filter {
+            flex: 1;
+            padding: 4px 6px;
+            font-size: 12px;
+            background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+            color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+            border: 1px solid var(--vscode-button-border, transparent);
+            border-radius: 2px;
+            cursor: pointer;
+            text-align: center;
+        }
+        .btn-filter:hover {
+            background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+        }
+        .btn-filter.active {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            font-weight: 600;
+        }
+        .filter-count {
+            font-size: 10px;
+            opacity: 0.7;
+            margin-left: 2px;
+        }
     </style>
 </head>
 <body>
+    <div class="sync-bar">
+        <button class="btn-sync" id="btnSyncJira" onclick="syncJira()">
+            <span id="syncJiraIcon">&#x21bb;</span>
+            <span id="syncJiraText">Jira</span>
+        </button>
+        <button class="btn-sync" id="btnSyncGitLab" onclick="syncGitLab()">
+            <span id="syncGitLabIcon">&#x21bb;</span>
+            <span id="syncGitLabText">GitLab</span>
+        </button>
+        <span class="sync-status" id="syncStatus"></span>
+    </div>
+
+    <div class="error-banner" id="errorBanner"></div>
+
+    <div class="filter-bar">
+        <button class="btn-filter active" id="filterAll" onclick="toggleFilter('all')">All <span class="filter-count" id="countAll"></span></button>
+        <button class="btn-filter active" id="filterJira" onclick="toggleFilter('jira')">Jira <span class="filter-count" id="countJira"></span></button>
+        <button class="btn-filter active" id="filterGitLab" onclick="toggleFilter('gitlab')">GitLab <span class="filter-count" id="countGitLab"></span></button>
+        <button class="btn-filter active" id="filterUser" onclick="toggleFilter('user')">User <span class="filter-count" id="countUser"></span></button>
+    </div>
+
     <div class="add-section">
         <input type="text" id="todoTitle" placeholder="输入待办事项标题..." />
         <textarea id="todoDesc" placeholder="描述（可选）..." rows="2"></textarea>
@@ -323,6 +563,54 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
     <script>
         const vscode = acquireVsCodeApi();
         let todos = [];
+        let activeFilters = new Set(['jira', 'gitlab', 'user']); // all selected by default
+
+        function getFilteredTodos() {
+            return todos.filter(t => {
+                if (t.jiraKey) return activeFilters.has('jira');
+                if (t.gitlabMrId) return activeFilters.has('gitlab');
+                return activeFilters.has('user');
+            });
+        }
+
+        function updateFilterCounts() {
+            const jiraCount = todos.filter(t => t.jiraKey).length;
+            const gitlabCount = todos.filter(t => t.gitlabMrId).length;
+            const userCount = todos.filter(t => !t.jiraKey && !t.gitlabMrId).length;
+            document.getElementById('countAll').textContent = '(' + todos.length + ')';
+            document.getElementById('countJira').textContent = '(' + jiraCount + ')';
+            document.getElementById('countGitLab').textContent = '(' + gitlabCount + ')';
+            document.getElementById('countUser').textContent = '(' + userCount + ')';
+        }
+
+        function updateFilterButtons() {
+            const allActive = activeFilters.has('jira') && activeFilters.has('gitlab') && activeFilters.has('user');
+            document.getElementById('filterAll').classList.toggle('active', allActive);
+            document.getElementById('filterJira').classList.toggle('active', activeFilters.has('jira'));
+            document.getElementById('filterGitLab').classList.toggle('active', activeFilters.has('gitlab'));
+            document.getElementById('filterUser').classList.toggle('active', activeFilters.has('user'));
+        }
+
+        function toggleFilter(type) {
+            if (type === 'all') {
+                // Toggle all on/off
+                const allActive = activeFilters.has('jira') && activeFilters.has('gitlab') && activeFilters.has('user');
+                if (allActive) {
+                    activeFilters.clear();
+                } else {
+                    activeFilters = new Set(['jira', 'gitlab', 'user']);
+                }
+            } else {
+                // Toggle individual filter
+                if (activeFilters.has(type)) {
+                    activeFilters.delete(type);
+                } else {
+                    activeFilters.add(type);
+                }
+            }
+            updateFilterButtons();
+            renderTodos();
+        }
 
         // 监听来自 Extension 的消息
         window.addEventListener('message', event => {
@@ -330,11 +618,58 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             if (message.command === 'loadTodos') {
                 todos = message.todos;
                 renderTodos();
+            } else if (message.command === 'syncStart') {
+                setSyncLoading(true, message.source);
+            } else if (message.command === 'syncDone') {
+                setSyncLoading(false, message.source);
+                const status = document.getElementById('syncStatus');
+                const label = message.source === 'gitlab' ? 'GitLab' : 'Jira';
+                if (message.error) {
+                    const banner = document.getElementById('errorBanner');
+                    banner.textContent = label + ' 同步失败: ' + message.error;
+                    banner.classList.add('visible');
+                    status.textContent = '';
+                } else if (message.count < 0) {
+                    document.getElementById('errorBanner').classList.remove('visible');
+                    status.textContent = message.info || '';
+                    status.style.color = 'var(--vscode-descriptionForeground)';
+                    setTimeout(() => { status.textContent = ''; }, 5000);
+                } else {
+                    document.getElementById('errorBanner').classList.remove('visible');
+                    status.textContent = label + ' 已同步 ' + message.count + ' 条';
+                    status.style.color = 'var(--vscode-descriptionForeground)';
+                    setTimeout(() => { status.textContent = ''; }, 5000);
+                }
             }
         });
 
         // 初始加载
         vscode.postMessage({ command: 'getTodos' });
+
+        function syncJira() {
+            vscode.postMessage({ command: 'syncJira' });
+        }
+
+        function syncGitLab() {
+            vscode.postMessage({ command: 'syncGitLab' });
+        }
+
+        function setSyncLoading(loading, source) {
+            const idSuffix = source === 'gitlab' ? 'GitLab' : 'Jira';
+            const btn = document.getElementById('btnSync' + idSuffix);
+            const icon = document.getElementById('sync' + idSuffix + 'Icon');
+            const text = document.getElementById('sync' + idSuffix + 'Text');
+            const label = source === 'gitlab' ? 'GitLab' : 'Jira';
+            if (loading) {
+                btn.disabled = true;
+                icon.innerHTML = '<span class="spinner"></span>';
+                text.textContent = '同步中...';
+            } else {
+                btn.disabled = false;
+                icon.innerHTML = '&#x21bb;';
+                text.textContent = label;
+            }
+        }
 
         function addTodo() {
             const titleInput = document.getElementById('todoTitle');
@@ -405,30 +740,50 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
         }
 
+        function getStatusBadge(status) {
+            if (!status) return '';
+            const key = status.toLowerCase().replace(/ /g, '-');
+            const colorMap = {
+                'open': 'background:#3A5A7F;color:#fff',
+                'in-progress': 'background:#FFD351;color:#2E4A1E',
+                'in-test': 'background:#9FFCFD;color:#1A3A3A',
+                'resolved': 'background:#10B981;color:#fff',
+                'closed': 'background:#6B7280;color:#fff',
+                'merged': 'background:#7C3AED;color:#fff',
+                'opened': 'background:#3A5A7F;color:#fff'
+            };
+            const style = colorMap[key] || 'background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)';
+            return '<span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;line-height:1.4;vertical-align:middle;margin-left:6px;' + style + '">' + escapeHtml(status) + '</span>';
+        }
+
         function renderTodos() {
             const list = document.getElementById('todoList');
             const empty = document.getElementById('emptyState');
             const stats = document.getElementById('stats');
             const statsText = document.getElementById('statsText');
 
-            if (todos.length === 0) {
+            updateFilterCounts();
+            const filtered = getFilteredTodos();
+
+            if (filtered.length === 0) {
                 list.innerHTML = '';
                 empty.style.display = 'block';
+                empty.textContent = todos.length === 0 ? '\u6682\u65e0\u5f85\u529e\u4e8b\u9879\uff0c\u6dfb\u52a0\u4e00\u4e2a\u5427\uff01' : '\u5f53\u524d\u8fc7\u6ee4\u6761\u4ef6\u4e0b\u65e0\u5f85\u529e\u4e8b\u9879';
                 stats.style.display = 'none';
                 return;
             }
 
             empty.style.display = 'none';
             stats.style.display = 'flex';
-            const done = todos.filter(t => t.completed).length;
-            statsText.textContent = done + ' / ' + todos.length + ' 已完成';
+            const done = filtered.filter(t => t.completed).length;
+            statsText.textContent = done + ' / ' + filtered.length + ' \u5df2\u5b8c\u6210';
 
-            list.innerHTML = todos.map(todo => 
+            list.innerHTML = filtered.map(todo => 
                 '<li class="todo-item ' + (todo.completed ? 'completed' : '') + '" id="todo-' + todo.id + '" data-id="' + todo.id + '" data-url="' + (todo.url ? escapeHtml(todo.url) : '') + '" draggable="true">' +
                     '<input type="checkbox" class="todo-checkbox" ' + (todo.completed ? 'checked' : '') + ' onchange="toggleTodo(\\'' + todo.id + '\\', ' + todo.completed + ')" />' +
                     '<div class="todo-content">' +
                         '<div class="todo-title">' + escapeHtml(todo.title) + '</div>' +
-                        (todo.description ? '<div class="todo-desc">' + escapeHtml(todo.description) + '</div>' : '') +
+                        (todo.description || todo.status ? '<div class="todo-desc">' + (todo.description ? escapeHtml(todo.description) + ' ' : '') + getStatusBadge(todo.status) + '</div>' : '') +
                         '<div class="todo-meta">' + formatDate(todo.createdAt) + '</div>' +
                     '</div>' +
                     '<button class="btn-delete" title="编辑" onclick="startEdit(\\'' + todo.id + '\\')">&#9998;</button>' +
@@ -521,6 +876,7 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
                 items += '<div class="context-menu-item" data-action="openUrl">在浏览器中打开</div>';
             }
             items += '<div class="context-menu-item" data-action="copy">复制标题</div>';
+            items += '<div class="context-menu-item" data-action="addToChat">添加到对话</div>';
             items += '<div class="context-menu-item" data-action="toggle">' + (todo.completed ? '取消完成' : '标记完成') + '</div>';
             items += '<div class="context-menu-item" data-action="edit">编辑</div>';
             items += '<div class="context-menu-separator"></div>';
@@ -561,6 +917,9 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'copy':
                     navigator.clipboard.writeText(todo.title);
+                    break;
+                case 'addToChat':
+                    vscode.postMessage({ command: 'addToChat', title: todo.title });
                     break;
                 case 'toggle':
                     toggleTodo(todo.id, todo.completed);

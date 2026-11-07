@@ -19,4 +19,7 @@ export interface TodoService {
 
     /** 按指定顺序重新排列待办事项 */
     reorder(orderedIds: string[]): Promise<Todo[]>;
+
+    /** 清除所有待办事项 */
+    clearAll(): Promise<void>;
 }

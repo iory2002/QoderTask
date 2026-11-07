@@ -2,7 +2,8 @@
   "name": "todo-panel",
   "displayName": "Todo Panel",
   "description": "A sidebar panel for managing your to-do items",
-  "version": "0.0.1",
+  "version": "0.2.7",
+  "icon": "icon.png",
   "publisher": "your-name",
   "engines": {
     "vscode": "^1.74.0"
@@ -37,12 +38,18 @@
       },
       {
         "command": "todoPanel.refresh",
-        "title": "Refresh Todos",
-        "icon": "$(refresh)"
+        "title": "Sync Jira",
+        "icon": "$(sync)"
       },
       {
-        "command": "todoPanel.loadDemo",
-        "title": "Todo Panel: Load Demo Data"
+        "command": "todoPanel.syncGitLab",
+        "title": "Todo Panel: Sync GitLab MRs",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "todoPanel.clearAll",
+        "title": "Clear All",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -53,7 +60,7 @@
           "group": "navigation"
         },
         {
-          "command": "todoPanel.refresh",
+          "command": "todoPanel.clearAll",
           "when": "view == todoPanel.webview",
           "group": "navigation"
         }
@@ -63,11 +70,13 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/vscode": "^1.74.0",
     "@types/node": "^18.0.0",
+    "@vscode/vsce": "^2.22.0",
     "typescript": "^5.0.0"
   }
 }

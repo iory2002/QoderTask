@@ -1,3 +1,5 @@
 node_modules/
 .todo-data.json
 fake-tasks.md
+out/
+*.vsix
