@@ -5,12 +5,17 @@ import type {
     BoardScope,
     BoardStatePayload,
     Freshness,
+    MrFact,
+    Stage,
 } from '../models/Board';
 import { JiraService, type JiraIssue, type JiraSprint } from '../services/JiraService';
+import { GitLabService, type GitLabApprovals } from '../services/GitLabService';
+import { associateMrs, toMrFacts } from '../services/MrAssociation';
+import { resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { BoardPanel } from './BoardPanel';
 import { ConfigError, describeError } from './errors';
 import { revisionOf } from './fingerprint';
-import { readConfig } from './config';
+import { readConfig, type BoardConfig, type RepoConfig } from './config';
 
 const ISSUE_FIELDS = [
     'summary',
@@ -39,6 +44,8 @@ export class BoardState {
     private rankField = 'customfield_10005';
     private freshness: Freshness = { lastSuccessAt: null, stale: false, error: null, loading: false };
     private notices: BoardNotice[] = [];
+    /** 阶段解析产生的告警（GitLab 未配置 / 取数失败），每轮重建 */
+    private stageNotices: BoardNotice[] = [];
     private pendingKeys: string[] = [];
     private lastPublishedRevision = '';
     private inFlight = false;
@@ -139,6 +146,7 @@ export class BoardState {
             this.sprint = await this.jira.getActiveSprint(config.boardId);
 
             this.cards = this.sprint ? await this.fetchCards(this.sprint) : [];
+            await this.applyStages(this.cards, config);
 
             console.log(
                 `[jira-board] board ${config.boardId} 列定义：` +
@@ -274,9 +282,177 @@ export class BoardState {
         };
     }
 
+    /**
+     * 事实 → 阶段。每个 repo 条目每轮只发一次列表请求，本地 join 到卡片；
+     * 子任务没有自己的 MR 时继承父任务的解析结果。
+     */
+    private async applyStages(cards: BoardCard[], config: BoardConfig): Promise<void> {
+        this.stageNotices = [];
+        const repoByProject = new Map<string, RepoConfig>();
+        for (const repo of config.repos) {
+            for (const project of repo.jiraProjects) {
+                repoByProject.set(project, repo);
+            }
+        }
+        if (repoByProject.size === 0) {
+            return;
+        }
+
+        const gitlab = new GitLabService();
+        const configured = gitlab.isConfigured();
+        const factsByRepo = new Map<string, { ok: boolean; byKey: Map<string, MrFact[]> }>();
+
+        if (!configured) {
+            this.stageNotices.push({
+                level: 'error',
+                message: 'GitLab 未配置，追踪中的项目无法判定交付阶段',
+                hint: '在 ~/.scrumbuddy/config.json 里补 gitlab.baseUrl / gitlab.token',
+            });
+        } else {
+            // 同一个仓库 + 目标分支只拉一次，多个 Jira 项目可以共享
+            const groups = new Map<string, { repo: RepoConfig; projects: string[] }>();
+            for (const repo of config.repos) {
+                const id = `${repo.gitlabProject}@${repo.targetBranch}`;
+                const group = groups.get(id);
+                if (group) {
+                    group.projects.push(...repo.jiraProjects);
+                } else {
+                    groups.set(id, { repo, projects: [...repo.jiraProjects] });
+                }
+            }
+
+            for (const [id, group] of groups) {
+                if (!group.repo.gitlabProject) {
+                    factsByRepo.set(id, { ok: false, byKey: new Map() });
+                    continue;
+                }
+                try {
+                    const mrs = await gitlab.listTargetBranchMrs(group.repo.gitlabProject, group.repo.targetBranch);
+                    const approvals = await this.fetchApprovals(gitlab, group.repo.gitlabProject, mrs);
+                    const byKey = associateMrs(mrs, group.projects);
+                    const facts = new Map<string, MrFact[]>();
+                    for (const [key, associated] of byKey) {
+                        facts.set(
+                            key,
+                            toMrFacts(associated).map((fact) => {
+                                const approval = approvals.get(fact.iid);
+                                return approval
+                                    ? {
+                                          ...fact,
+                                          approved: approval.approved,
+                                          approvedBy: approval.approvedBy,
+                                          approvalsLeft: approval.approvalsLeft,
+                                      }
+                                    : fact;
+                            })
+                        );
+                    }
+                    factsByRepo.set(id, { ok: true, byKey: facts });
+                } catch (error) {
+                    const described = describeError(error);
+                    console.warn(`[jira-board] ${group.repo.gitlabProject}@${group.repo.targetBranch} 取数失败`, error);
+                    factsByRepo.set(id, { ok: false, byKey: new Map() });
+                    this.stageNotices.push({
+                        level: 'error',
+                        message: `GitLab 取数失败（${group.repo.gitlabProject} → ${group.repo.targetBranch}）：${described.message}`,
+                        hint: described.hint ?? '检查 todoPanel.repos 的 gitlabProject / targetBranch 与 gitlab.token',
+                    });
+                }
+            }
+        }
+
+        const resolved = new Map<string, StageResult>();
+
+        // 第一遍：非子任务
+        for (const card of cards) {
+            if (card.isSubtask) {
+                continue;
+            }
+            const { result, mrs } = this.resolveCardStage(card, repoByProject, factsByRepo, configured);
+            resolved.set(card.key, result);
+            this.applyResult(card, result, mrs);
+        }
+
+        // 第二遍：子任务继承父任务
+        for (const card of cards) {
+            if (!card.isSubtask) {
+                continue;
+            }
+            const parent = card.parentKey ? resolved.get(card.parentKey) : undefined;
+            const inherited = parent
+                ? {
+                      stage: parent.stage ?? 'unknown',
+                      buildFailed: parent.buildFailed,
+                      evidence: [`父任务 ${card.parentKey} 的阶段为「${parent.stage ?? '未知'}」`],
+                      mr: parent.cardMr,
+                      build: parent.build,
+                  }
+                : undefined;
+
+            const { result, mrs } = this.resolveCardStage(card, repoByProject, factsByRepo, configured, inherited);
+            resolved.set(card.key, result);
+            this.applyResult(card, result, mrs);
+        }
+    }
+
+    private async fetchApprovals(
+        gitlab: GitLabService,
+        project: string,
+        mrs: Array<{ iid: number; state: string }>
+    ): Promise<Map<number, GitLabApprovals | null>> {
+        const opened = [...new Set(mrs.filter((mr) => mr.state === 'opened').map((mr) => mr.iid))];
+        if (opened.length === 0) {
+            return new Map();
+        }
+        const results = await GitLabService.mapWithLimit(opened, 4, (iid) => gitlab.getApprovals(project, iid));
+        return new Map(opened.map((iid, index) => [iid, results[index]]));
+    }
+
+    private resolveCardStage(
+        card: BoardCard,
+        repoByProject: Map<string, RepoConfig>,
+        factsByRepo: Map<string, { ok: boolean; byKey: Map<string, MrFact[]> }>,
+        gitlabConfigured: boolean,
+        inherited?: { stage: Stage; buildFailed: boolean; evidence: string[]; mr?: MrFact; build?: StageResult['build'] }
+    ): { result: StageResult; mrs: MrFact[] } {
+        const repo = repoByProject.get(card.project);
+        if (!repo) {
+            return {
+                result: resolveStage({ tracked: false, dataOk: true, buildChannel: 'none', mrs: [], builds: [] }),
+                mrs: [],
+            };
+        }
+
+        const repoId = `${repo.gitlabProject}@${repo.targetBranch}`;
+        const repoFacts = factsByRepo.get(repoId);
+        const buildChannel = repo.jenkinsJobPath ? 'full' : 'merge-only';
+        const mrs = repoFacts?.byKey.get(card.key) ?? [];
+
+        return {
+            result: resolveStage({
+                tracked: true,
+                dataOk: gitlabConfigured && (repoFacts?.ok ?? false),
+                buildChannel,
+                mrs,
+                builds: [],
+                inherited,
+            }),
+            mrs,
+        };
+    }
+
+    private applyResult(card: BoardCard, result: StageResult, mrs: MrFact[]): void {
+        card.stage = result.stage;
+        card.buildFailed = result.buildFailed;
+        card.buildChannel = result.buildChannel;
+        card.build = result.build;
+        card.evidence = result.evidence;
+        card.mrs = mrs.map((mr) => ({ ...mr, isCardMr: mr.iid === result.cardMr?.iid }));
+    }
+
     private buildNotices(): BoardNotice[] {
         const config = readConfig();
-        const notices: BoardNotice[] = [];
+        const notices: BoardNotice[] = [...this.stageNotices];
 
         if (config.projects.length === 0) {
             notices.push({

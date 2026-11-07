@@ -22,6 +22,40 @@ export interface GitLabSyncItem {
     url: string;
 }
 
+/** 列表接口的原始行（字段名是 GitLab 的 snake_case） */
+interface RawGitLabMr {
+    iid: number;
+    state: string;
+    target_branch: string;
+    source_branch?: string;
+    title?: string;
+    description?: string | null;
+    merged_at?: string | null;
+    merge_commit_sha?: string | null;
+    web_url: string;
+    updated_at: string;
+}
+
+/** 只读通道里的 MR 事实 */
+export interface GitLabMr {
+    iid: number;
+    state: string;
+    targetBranch: string;
+    sourceBranch: string;
+    title: string;
+    description: string;
+    mergedAt?: string;
+    mergeCommitSha?: string;
+    webUrl: string;
+    updatedAt: string;
+}
+
+export interface GitLabApprovals {
+    approved: boolean;
+    approvalsLeft: number | null;
+    approvedBy: string[];
+}
+
 export class GitLabApiError extends Error {
     constructor(
         public readonly status: number,
@@ -71,13 +105,90 @@ export class GitLabService {
     }
 
     public isConfigured(): boolean {
-        return this.config !== null;
+        this.reloadConfig();
+        return this.config !== null && !!this.config.baseUrl;
+    }
+
+    /**
+     * 目标分支上的 MR 列表：每轮只发这一条请求，本地 join。
+     *
+     * 只取阶段判定需要的字段。`state=all` 是必须的——已合入的 MR 才是「已合入」的证据。
+     */
+    public async listTargetBranchMrs(
+        project: string,
+        targetBranch: string,
+        updatedAfterDays = 90
+    ): Promise<GitLabMr[]> {
+        const updatedAfter = new Date(Date.now() - updatedAfterDays * 24 * 3600 * 1000).toISOString();
+        const query =
+            `/api/v4/projects/${encodeURIComponent(project)}/merge_requests` +
+            `?state=all&target_branch=${encodeURIComponent(targetBranch)}` +
+            `&updated_after=${encodeURIComponent(updatedAfter)}` +
+            '&per_page=100&order_by=updated_at&sort=desc';
+
+        const rows = await this.request<RawGitLabMr[]>(query, 15000);
+        return rows.map((row) => ({
+            iid: row.iid,
+            state: row.state,
+            targetBranch: row.target_branch,
+            sourceBranch: row.source_branch ?? '',
+            title: row.title ?? '',
+            description: row.description ?? '',
+            mergedAt: row.merged_at ?? undefined,
+            mergeCommitSha: row.merge_commit_sha ?? undefined,
+            webUrl: row.web_url,
+            updatedAt: row.updated_at,
+        }));
+    }
+
+    /**
+     * 审批只能看这个端点：`approved_by` 在列表与详情接口里根本不存在。
+     * 判据是 `approved === true`，不是 `approved_by.length > 0`。
+     */
+    public async getApprovals(project: string, iid: number): Promise<GitLabApprovals | null> {
+        try {
+            const body = await this.request<{
+                approved?: boolean;
+                approvals_left?: number;
+                approved_by?: Array<{ user?: { name?: string; username?: string } }>;
+            }>(`/api/v4/projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`, 10000);
+
+            return {
+                approved: body.approved === true,
+                approvalsLeft: typeof body.approvals_left === 'number' ? body.approvals_left : null,
+                approvedBy: (body.approved_by ?? [])
+                    .map((entry) => entry.user?.name ?? entry.user?.username ?? '')
+                    .filter(Boolean),
+            };
+        } catch (error) {
+            console.warn(`[jira-board] 读取 MR !${iid} 审批失败`, error);
+            return null;
+        }
+    }
+
+    /** 并发上限：opened MR 通常个位数，别把 GitLab 打爆 */
+    public static async mapWithLimit<T, R>(
+        items: T[],
+        limit: number,
+        worker: (item: T) => Promise<R>
+    ): Promise<R[]> {
+        const results: R[] = new Array(items.length);
+        let cursor = 0;
+        const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+            while (cursor < items.length) {
+                const index = cursor;
+                cursor += 1;
+                results[index] = await worker(items[index]);
+            }
+        });
+        await Promise.all(runners);
+        return results;
     }
 
     /**
      * 发起 GitLab REST API 请求（同时支持 http 和 https）
      */
-    private request<T>(urlPath: string): Promise<T> {
+    private request<T>(urlPath: string, timeoutMs = 8000): Promise<T> {
         return new Promise((resolve, reject) => {
             if (!this.config) {
                 reject(new Error('GitLab not configured'));
@@ -97,7 +208,7 @@ export class GitLabService {
                     'PRIVATE-TOKEN': this.config.token,
                     'Accept': 'application/json',
                 },
-                timeout: 8000,
+                timeout: timeoutMs,
                 ...(isHttps ? { agent: this.httpsAgent } : {}),
             };
 
