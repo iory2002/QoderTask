@@ -4,6 +4,7 @@ import type {
     BoardNotice,
     BoardScope,
     BoardStatePayload,
+    BuildFact,
     Freshness,
     MrFact,
     Stage,
@@ -11,6 +12,7 @@ import type {
 } from '../models/Board';
 import { JiraApiError, JiraService, type JiraIssue, type JiraSprint, type RawTransition } from '../services/JiraService';
 import { GitLabService, type GitLabApprovals } from '../services/GitLabService';
+import { JenkinsService } from '../services/JenkinsService';
 import { associateMrs, toMrFacts } from '../services/MrAssociation';
 import { resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { BoardPanel } from './BoardPanel';
@@ -19,6 +21,14 @@ import { computeDropRules } from './dropRules';
 import { buildTransitionForm } from './transitionForm';
 import { revisionOf } from './fingerprint';
 import { readConfig, type BoardConfig, type RepoConfig } from './config';
+
+/** 一个 repo 条目取回来的事实 */
+interface RepoFacts {
+    /** GitLab 与（需要时）Jenkins 都取数成功才为 true */
+    ok: boolean;
+    byKey: Map<string, MrFact[]>;
+    builds: BuildFact[];
+}
 
 const ISSUE_FIELDS = [
     'summary',
@@ -310,7 +320,9 @@ export class BoardState {
 
         const gitlab = new GitLabService();
         const configured = gitlab.isConfigured();
-        const factsByRepo = new Map<string, { ok: boolean; byKey: Map<string, MrFact[]> }>();
+        const jenkins = new JenkinsService();
+        const jenkinsConfigured = jenkins.isConfigured();
+        const factsByRepo = new Map<string, RepoFacts>();
 
         if (!configured) {
             this.stageNotices.push({
@@ -333,9 +345,37 @@ export class BoardState {
 
             for (const [id, group] of groups) {
                 if (!group.repo.gitlabProject) {
-                    factsByRepo.set(id, { ok: false, byKey: new Map() });
+                    factsByRepo.set(id, { ok: false, byKey: new Map(), builds: [] });
                     continue;
                 }
+
+                // 构建是独立的一跳：GitLab 成功但 Jenkins 取不到数，阶段仍然无法判定
+                let builds: BuildFact[] = [];
+                let buildsOk = true;
+                if (group.repo.jenkinsJobPath) {
+                    try {
+                        if (!jenkinsConfigured) {
+                            throw new ConfigError(
+                                'Jenkins 未配置，无法判定是否已构建',
+                                '在 ~/.scrumbuddy/config.json 里补 jenkins.baseUrl / jenkins.username / jenkins.token'
+                            );
+                        }
+                        builds = await jenkins.getRecentBuilds(
+                            group.repo.jenkinsJobPath,
+                            group.repo.targetBranch
+                        );
+                    } catch (error) {
+                        buildsOk = false;
+                        const described = describeError(error);
+                        console.warn(`[jira-board] Jenkins ${group.repo.jenkinsJobPath} 取数失败`, error);
+                        this.stageNotices.push({
+                            level: 'error',
+                            message: `Jenkins 取数失败（${group.repo.targetBranch}）：${described.message}`,
+                            hint: described.hint ?? '检查 todoPanel.repos[].jenkinsJobPath 与 jenkins.token',
+                        });
+                    }
+                }
+
                 try {
                     const mrs = await gitlab.listTargetBranchMrs(group.repo.gitlabProject, group.repo.targetBranch);
                     const approvals = await this.fetchApprovals(gitlab, group.repo.gitlabProject, mrs);
@@ -357,11 +397,11 @@ export class BoardState {
                             })
                         );
                     }
-                    factsByRepo.set(id, { ok: true, byKey: facts });
+                    factsByRepo.set(id, { ok: buildsOk, byKey: facts, builds });
                 } catch (error) {
                     const described = describeError(error);
                     console.warn(`[jira-board] ${group.repo.gitlabProject}@${group.repo.targetBranch} 取数失败`, error);
-                    factsByRepo.set(id, { ok: false, byKey: new Map() });
+                    factsByRepo.set(id, { ok: false, byKey: new Map(), builds });
                     this.stageNotices.push({
                         level: 'error',
                         message: `GitLab 取数失败（${group.repo.gitlabProject} → ${group.repo.targetBranch}）：${described.message}`,
@@ -421,7 +461,7 @@ export class BoardState {
     private resolveCardStage(
         card: BoardCard,
         repoByProject: Map<string, RepoConfig>,
-        factsByRepo: Map<string, { ok: boolean; byKey: Map<string, MrFact[]> }>,
+        factsByRepo: Map<string, RepoFacts>,
         gitlabConfigured: boolean,
         inherited?: { stage: Stage; buildFailed: boolean; evidence: string[]; mr?: MrFact; build?: StageResult['build'] }
     ): { result: StageResult; mrs: MrFact[] } {
@@ -444,7 +484,7 @@ export class BoardState {
                 dataOk: gitlabConfigured && (repoFacts?.ok ?? false),
                 buildChannel,
                 mrs,
-                builds: [],
+                builds: repoFacts?.builds ?? [],
                 inherited,
             }),
             mrs,

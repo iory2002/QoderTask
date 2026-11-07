@@ -1,4 +1,5 @@
 import { GitLabApiError } from '../services/GitLabService';
+import { JenkinsApiError } from '../services/JenkinsService';
 import { JiraApiError } from '../services/JiraService';
 
 /** 配置缺失是「可修」的失败：文案必须指到具体文件与字段 */
@@ -20,6 +21,9 @@ export function describeError(error: unknown): { message: string; hint?: string 
         return { message: error.readable };
     }
     if (error instanceof GitLabApiError) {
+        return { message: error.readable };
+    }
+    if (error instanceof JenkinsApiError) {
         return { message: error.readable };
     }
     if (error instanceof Error) {
