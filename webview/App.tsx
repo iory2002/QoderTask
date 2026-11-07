@@ -132,6 +132,8 @@ export function App() {
             ) : null}
             {form ? (
                 <TransitionDialog
+                    // 换卡/换目标列时必须重挂，否则表单会沿用上一张卡的值
+                    key={`${form.key}:${form.transition.id}`}
                     form={form}
                     submitting={submitting}
                     error={submitError}

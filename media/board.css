@@ -179,6 +179,13 @@ dialog::backdrop { background: rgba(20, 24, 32, .35); }
 /* 详情浮层 */
 .transition-dialog { width: 520px; }
 .soft-gate { width: 460px; }
+/* 弹窗层：非模态 dialog 不会画 ::backdrop，靠这层挡住背后的拖拽与点击 */
+.modal-layer {
+  position: fixed; inset: 0; z-index: 55;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 24, 32, .35);
+}
+.modal-layer dialog { margin: 0; max-height: 86vh; }
 .detail-backdrop { position: fixed; inset: 0; z-index: 35; background: rgba(20, 24, 32, .18); }
 .detail {
   position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw; z-index: 40;

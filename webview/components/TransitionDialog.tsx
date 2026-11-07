@@ -36,74 +36,76 @@ export function TransitionDialog({
     };
 
     return (
-        <dialog open class="transition-dialog">
-            <div class="dlg-head">
-                {form.transition.name} · {form.key}
-                <div class="spacer" />
-                <span class="hint">→ {form.columnName}</span>
-            </div>
+        <div class="modal-layer">
+            <dialog open class="transition-dialog">
+                <div class="dlg-head">
+                    {form.transition.name} · {form.key}
+                    <div class="spacer" />
+                    <span class="hint">→ {form.columnName}</span>
+                </div>
 
-            <div class="dlg-body">
-                {blocked ? (
-                    <div class="warn">
-                        <b>这些字段插件填不了，请到 Jira 完成：</b>
-                        <ul>
-                            {form.unsupportedFields.map((name) => (
-                                <li key={name}>{name}</li>
-                            ))}
-                        </ul>
-                        <button
-                            class="btn"
-                            onClick={() => post({ type: 'board:openExternal', payload: { url: form.jiraUrl } })}
-                        >
-                            在 Jira 中完成
-                        </button>
-                    </div>
-                ) : (
-                    <div class="hint">
-                        字段已按这张 issue 的当前值填好，只提交你改动过的项；不改就无需填写。
-                    </div>
-                )}
+                <div class="dlg-body">
+                    {blocked ? (
+                        <div class="warn">
+                            <b>这些字段插件填不了，请到 Jira 完成：</b>
+                            <ul>
+                                {form.unsupportedFields.map((name) => (
+                                    <li key={name}>{name}</li>
+                                ))}
+                            </ul>
+                            <button
+                                class="btn"
+                                onClick={() => post({ type: 'board:openExternal', payload: { url: form.jiraUrl } })}
+                            >
+                                在 Jira 中完成
+                            </button>
+                        </div>
+                    ) : (
+                        <div class="hint">
+                            字段已按这张 issue 的当前值填好，只提交你改动过的项；不改就无需填写。
+                        </div>
+                    )}
 
-                {error ? <div class="banner error">{error}</div> : null}
+                    {error ? <div class="banner error">{error}</div> : null}
 
-                {form.fields.map((field) => (
-                    <div class={field.kind === 'unsupported' ? 'field unsupported' : 'field'} key={field.id}>
-                        <label>
-                            {field.name}
-                            {field.required ? <span class="req"> *</span> : null}
-                            {field.kind === 'unsupported' ? (
-                                <span class="hint"> · 不支持的类型 {field.schemaType}</span>
-                            ) : null}
-                        </label>
-                        <FieldControl
-                            field={field}
-                            value={values[field.id] ?? null}
-                            disabled={submitting}
-                            onChange={(next) => setValue(field, next)}
-                        />
-                        {fieldErrors[field.id] ? <div class="err">{fieldErrors[field.id]}</div> : null}
-                    </div>
-                ))}
+                    {form.fields.map((field) => (
+                        <div class={field.kind === 'unsupported' ? 'field unsupported' : 'field'} key={field.id}>
+                            <label>
+                                {field.name}
+                                {field.required ? <span class="req"> *</span> : null}
+                                {field.kind === 'unsupported' ? (
+                                    <span class="hint"> · 不支持的类型 {field.schemaType}</span>
+                                ) : null}
+                            </label>
+                            <FieldControl
+                                field={field}
+                                value={values[field.id] ?? null}
+                                disabled={submitting}
+                                onChange={(next) => setValue(field, next)}
+                            />
+                            {fieldErrors[field.id] ? <div class="err">{fieldErrors[field.id]}</div> : null}
+                        </div>
+                    ))}
 
-                {missing.length > 0 && !blocked ? (
-                    <div class="hint">还差必填项：{missing.join('、')}</div>
-                ) : null}
-            </div>
+                    {missing.length > 0 && !blocked ? (
+                        <div class="hint">还差必填项：{missing.join('、')}</div>
+                    ) : null}
+                </div>
 
-            <div class="dlg-foot">
-                <button class="btn" onClick={onCancel} disabled={submitting}>
-                    取消
-                </button>
-                <button
-                    class="btn primary"
-                    disabled={!canSubmit}
-                    onClick={() => onSubmit(collectChangedFields(form, values))}
-                >
-                    {submitting ? '提交中…' : `提交并移动到 ${form.columnName}`}
-                </button>
-            </div>
-        </dialog>
+                <div class="dlg-foot">
+                    <button class="btn" onClick={onCancel} disabled={submitting}>
+                        取消
+                    </button>
+                    <button
+                        class="btn primary"
+                        disabled={!canSubmit}
+                        onClick={() => onSubmit(collectChangedFields(form, values))}
+                    >
+                        {submitting ? '提交中…' : `提交并移动到 ${form.columnName}`}
+                    </button>
+                </div>
+            </dialog>
+        </div>
     );
 }
 
@@ -157,7 +159,11 @@ function FieldControl({
             <select
                 value={value === null ? '' : String(value)}
                 disabled={disabled}
-                onChange={(event) => onChange((event.currentTarget as HTMLSelectElement).value || null)}
+                onChange={(event) => {
+                    // 「（不修改）」= 还原成预填值，绝不能用空值去清空 Jira 字段
+                    const picked = (event.currentTarget as HTMLSelectElement).value;
+                    onChange(picked === '' ? field.value : picked);
+                }}
             >
                 <option value="">（不修改）</option>
                 {withCurrent(field.options, value as string | null).map((option) => (
@@ -175,7 +181,10 @@ function FieldControl({
                 <select
                     value={value === null ? '' : String(value)}
                     disabled={disabled}
-                    onChange={(event) => onChange((event.currentTarget as HTMLSelectElement).value || null)}
+                    onChange={(event) => {
+                        const picked = (event.currentTarget as HTMLSelectElement).value;
+                        onChange(picked === '' ? field.value : picked);
+                    }}
                 >
                     <option value="">（不修改）</option>
                     {withCurrent(field.options, value as string | null).map((option) => (

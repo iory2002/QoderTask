@@ -275,7 +275,8 @@ POST /rest/api/2/issue/{key}/transitions
   `*` 头像只在「只看我的」关闭时显示。
 - **阶段徽章配色**：未提交 `#f1f3f5/#6b7280`；MR 待审 `#3A5A7F/#fff`；已 Approve `#7C3AED/#fff`；已合入待构建 `#F59E0B/#3d2800`；已构建 `#10B981/#fff`；Build failed `#EF4444/#fff`；无法判定 灰底虚线框 `#b42318` 文字。
 - **Done 列**：全量展示但整体灰化。
-- **详情浮层**：阶段事实链（MR 链接 / approver / merged_at / build 号 / 构建时间 / 分支）+ 推导说明 + 「推送 In Test」+「在 Jira 中打开」。
+- **详情浮层**：阶段事实链（MR 链接 / approver / merged_at / build 号 / 构建时间 / 分支）+ 推导说明 + 「在 Jira 中打开」。
+  > 实现备注：「推送 In Test」按钮已取消。地图里定的手动手势只有「拖拽跨列」，浮层里的按钮会变成第二条写入路径，与 `card:transition` 的单卡单次通道重复。
 
 ---
 

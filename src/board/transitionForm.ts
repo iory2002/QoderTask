@@ -132,6 +132,7 @@ export function buildTransitionForm(input: BuildFormInput): TransitionForm {
 /**
  * 只把用户改动过的字段变成 Jira 的写入形状。
  * 未改动的一律不进请求——这些字段当前值本来就满足校验。
+ * null 只在「用户显式清空」时出现（界面上「不修改」会还原成预填值，不会走到这里）。
  */
 export function collectChangedFields(form: TransitionForm, values: Record<string, string | string[] | null>): Record<string, unknown> {
     const payload: Record<string, unknown> = {};

@@ -55,7 +55,7 @@ export class BoardState {
     private cards: BoardCard[] = [];
     private sprint: JiraSprint | null = null;
     private rankField = 'customfield_10005';
-    private freshness: Freshness = { lastSuccessAt: null, stale: false, error: null, loading: false };
+    private freshness: Freshness = { lastSuccessAt: null, stale: false, error: null };
     private notices: BoardNotice[] = [];
     /** 阶段解析产生的告警（GitLab 未配置 / 取数失败），每轮重建 */
     private stageNotices: BoardNotice[] = [];
@@ -94,20 +94,23 @@ export class BoardState {
         };
     }
 
-    /** 上一轮没回来就不发下一轮 */
-    public async refresh(_force: boolean): Promise<void> {
+    /** 上一轮没回来就不发下一轮；force 只影响「无变化也重发」 */
+    public async refresh(force = false): Promise<void> {
         if (this.inFlight || this.disposed) {
             return;
         }
         this.inFlight = true;
-        this.freshness = { ...this.freshness, loading: true };
         try {
             await this.load();
         } finally {
             this.inFlight = false;
-            this.freshness = { ...this.freshness, loading: false };
-            this.publish();
+            this.publish(force);
         }
+    }
+
+    /** WebView 重建后必须能拿到当前状态：指纹没变时也要重发一次 */
+    public republish(): void {
+        this.publish(true);
     }
 
     /**
@@ -174,7 +177,7 @@ export class BoardState {
                     `，rank=${this.rankField}，sprint=${this.sprint?.name ?? '无'}，卡片=${this.cards.length}`
             );
 
-            this.freshness = { lastSuccessAt: Date.now(), stale: false, error: null, loading: true };
+            this.freshness = { lastSuccessAt: Date.now(), stale: false, error: null };
             this.notices = this.buildNotices();
         } catch (error) {
             const described = describeError(error);
@@ -182,7 +185,6 @@ export class BoardState {
                 ...this.freshness,
                 stale: this.freshness.lastSuccessAt !== null,
                 error: described.message,
-                loading: true,
             };
             this.notices = [
                 { level: 'error', message: described.message, hint: described.hint },
@@ -385,15 +387,20 @@ export class BoardState {
                         facts.set(
                             key,
                             toMrFacts(associated).map((fact) => {
+                                if (fact.state !== 'opened') {
+                                    return fact;
+                                }
                                 const approval = approvals.get(fact.iid);
-                                return approval
-                                    ? {
+                                // 取不到审批就不许下「未批准」的结论，交给 resolver 判 unknown
+                                return approval === undefined
+                                    ? { ...fact, approvalsKnown: false }
+                                    : {
                                           ...fact,
                                           approved: approval.approved,
                                           approvedBy: approval.approvedBy,
                                           approvalsLeft: approval.approvalsLeft,
-                                      }
-                                    : fact;
+                                          approvalsKnown: true,
+                                      };
                             })
                         );
                     }
@@ -429,6 +436,7 @@ export class BoardState {
                 continue;
             }
             const parent = card.parentKey ? resolved.get(card.parentKey) : undefined;
+            // 父任务可能不在当前看板上（只看我的时最常见）：那就没法继承，只能判「无法判定」
             const inherited = parent
                 ? {
                       stage: parent.stage ?? 'unknown',
@@ -436,6 +444,14 @@ export class BoardState {
                       evidence: [`父任务 ${card.parentKey} 的阶段为「${parent.stage ?? '未知'}」`],
                       mr: parent.cardMr,
                       build: parent.build,
+                  }
+                : card.parentKey
+                ? {
+                      stage: 'unknown' as Stage,
+                      buildFailed: false,
+                      evidence: [`父任务 ${card.parentKey} 不在当前看板上，无法继承交付阶段`],
+                      mr: undefined,
+                      build: undefined,
                   }
                 : undefined;
 
@@ -449,7 +465,7 @@ export class BoardState {
         gitlab: GitLabService,
         project: string,
         mrs: Array<{ iid: number; state: string }>
-    ): Promise<Map<number, GitLabApprovals | null>> {
+    ): Promise<Map<number, GitLabApprovals | undefined>> {
         const opened = [...new Set(mrs.filter((mr) => mr.state === 'opened').map((mr) => mr.iid))];
         if (opened.length === 0) {
             return new Map();
@@ -588,12 +604,12 @@ export class BoardState {
         });
     }
 
-    private publish(): void {
+    private publish(force = false): void {
         if (this.disposed) {
             return;
         }
         const payload = this.buildPayload();
-        if (payload.revision === this.lastPublishedRevision) {
+        if (!force && payload.revision === this.lastPublishedRevision) {
             return;
         }
         this.lastPublishedRevision = payload.revision;
@@ -636,9 +652,11 @@ export class BoardState {
 
             await this.jira.transition(request.key, request.transitionId, request.fields);
 
+            // await 期间轮询可能整体替换了 this.cards，必须按 key 重新取
             this.pending.delete(request.key);
-            card.statusId = toStatusId;
-            card.columnName = targetColumn?.name ?? card.columnName;
+            const live = this.cards.find((candidate) => candidate.key === request.key) ?? card;
+            live.statusId = toStatusId;
+            live.columnName = targetColumn?.name ?? live.columnName;
             this.lastInteraction = null;
 
             BoardPanel.post({ type: 'card:transitionResult', payload: { key: request.key, ok: true } });
@@ -648,10 +666,11 @@ export class BoardState {
             const pending = this.pending.get(request.key);
             this.pending.delete(request.key);
             if (pending) {
-                card.statusId = pending.prevStatusId;
-                card.columnName = pending.prevColumnName;
+                const live = this.cards.find((candidate) => candidate.key === request.key) ?? card;
+                live.statusId = pending.prevStatusId;
+                live.columnName = pending.prevColumnName;
             }
-            this.publish();
+            this.publish(true);
 
             const described = describeError(error);
             const fieldErrors = error instanceof JiraApiError ? error.fieldErrors : undefined;
@@ -694,6 +713,8 @@ export class BoardState {
             stale: this.freshness.stale,
             error: this.freshness.error,
             pending: [...this.pending.keys()],
+            // 同步时间按分钟入指纹：数据没变也会更新「同步于 hh:mm」，但不会每轮都重绘
+            syncedMinute: this.freshness.lastSuccessAt === null ? null : Math.floor(this.freshness.lastSuccessAt / 60000),
         });
 
         return {

@@ -14,6 +14,7 @@ function mr(overrides: Partial<MrFact> & { iid: number }): MrFact {
         approved: false,
         approvedBy: [],
         approvalsLeft: 1,
+        approvalsKnown: true,
         matchedBy: 'title',
         isCardMr: false,
         ...overrides,
@@ -62,6 +63,18 @@ test('an approved open MR is approved-not-merged', () => {
         builds: [],
     });
     assert.equal(result.stage, 'approved');
+});
+
+test('a failed /approvals call is unknown, not "awaiting review"', () => {
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [mr({ iid: 3742, approvalsKnown: false, approvalsLeft: null })],
+        builds: [],
+    });
+    assert.equal(result.stage, 'unknown');
+    assert.match(result.evidence.join('\n'), /取数失败/);
 });
 
 test('a merge with no later build sits at merged', () => {

@@ -8,18 +8,6 @@ import { loadScrumBuddyConfig } from './ScrumBuddyConfig';
 interface ScrumBuddyGitLabConfig {
     baseUrl: string;
     token: string;
-    defaultProjectId?: string;
-}
-
-/**
- * 从 GitLab 同步回来的简化 MR 结构
- */
-export interface GitLabSyncItem {
-    gitlabMrId: string;   // MR IID（如 "42"）
-    title: string;
-    description: string;
-    status: string;       // opened / merged / closed
-    url: string;
 }
 
 /** 列表接口的原始行（字段名是 GitLab 的 snake_case） */
@@ -120,13 +108,24 @@ export class GitLabService {
         updatedAfterDays = 90
     ): Promise<GitLabMr[]> {
         const updatedAfter = new Date(Date.now() - updatedAfterDays * 24 * 3600 * 1000).toISOString();
-        const query =
-            `/api/v4/projects/${encodeURIComponent(project)}/merge_requests` +
-            `?state=all&target_branch=${encodeURIComponent(targetBranch)}` +
-            `&updated_after=${encodeURIComponent(updatedAfter)}` +
-            '&per_page=100&order_by=updated_at&sort=desc';
+        const rows: RawGitLabMr[] = [];
 
-        const rows = await this.request<RawGitLabMr[]>(query, 15000);
+        // 单页 100 条；大分支 90 天可能超一页，最多翻 3 页。
+        // 主分支上被截断会导致「已合入」的卡退回「未提交」，比多发两次请求糟得多。
+        for (let page = 1; page <= 3; page += 1) {
+            const query =
+                `/api/v4/projects/${encodeURIComponent(project)}/merge_requests` +
+                `?state=all&target_branch=${encodeURIComponent(targetBranch)}` +
+                `&updated_after=${encodeURIComponent(updatedAfter)}` +
+                `&per_page=100&page=${page}&order_by=updated_at&sort=desc`;
+
+            const chunk = await this.request<RawGitLabMr[]>(query, 15000);
+            rows.push(...chunk);
+            if (chunk.length < 100) {
+                break;
+            }
+        }
+
         return rows.map((row) => ({
             iid: row.iid,
             state: row.state,
@@ -144,8 +143,10 @@ export class GitLabService {
     /**
      * 审批只能看这个端点：`approved_by` 在列表与详情接口里根本不存在。
      * 判据是 `approved === true`，不是 `approved_by.length > 0`。
+     *
+     * 取数失败返回 undefined（未知），不能返回一个「未批准」的假结论。
      */
-    public async getApprovals(project: string, iid: number): Promise<GitLabApprovals | null> {
+    public async getApprovals(project: string, iid: number): Promise<GitLabApprovals | undefined> {
         try {
             const body = await this.request<{
                 approved?: boolean;
@@ -161,8 +162,8 @@ export class GitLabService {
                     .filter(Boolean),
             };
         } catch (error) {
-            console.warn(`[jira-board] 读取 MR !${iid} 审批失败`, error);
-            return null;
+            console.warn(`[jira-board] 读取 MR !${iid} 审批失败，该卡将判为无法判定`, error);
+            return undefined;
         }
     }
 
@@ -236,133 +237,5 @@ export class GitLabService {
             });
             req.end();
         });
-    }
-
-    /**
-     * 获取与当前用户相关的 open MR：
-     * - Assignee 是我（scope=assigned-to-me）
-     * - Reviewer 是我（reviewer_username=当前用户）
-     * 通过 approvals API 过滤掉当前用户已审批的 MR
-     */
-    public async getMyMergeRequests(): Promise<GitLabSyncItem[]> {
-        type RawMR = {
-            iid: number;
-            title: string;
-            description: string | null;
-            state: string;
-            source_branch: string;
-            target_branch: string;
-            web_url: string;
-            updated_at: string;
-            author?: { name: string };
-            merge_status?: string;
-            detailed_merge_status?: string;
-            project_id?: number;
-        };
-
-        // 先获取当前用户名，用于 reviewer 过滤及审批判断
-        const username = await this.getCurrentUser();
-        if (!username) { return []; }
-
-        // 并行发起两个请求
-        const [assignee, reviewer] = await Promise.all([
-            this.request<RawMR[]>('/api/v4/merge_requests?scope=assigned-to-me&state=opened&order_by=updated_at&per_page=50'),
-            this.request<RawMR[]>(`/api/v4/merge_requests?scope=all&state=opened&reviewer_username=${encodeURIComponent(username)}&order_by=updated_at&per_page=50`),
-        ]);
-
-        // 合并并去重（以 iid 为 key，同时记录角色）
-        const mrMap = new Map<number, { mr: RawMR; roles: Set<string> }>();
-        for (const mr of assignee) {
-            mrMap.set(mr.iid, { mr, roles: new Set(['Assignee']) });
-        }
-        for (const mr of reviewer) {
-            const entry = mrMap.get(mr.iid);
-            if (entry) {
-                entry.roles.add('Reviewer');
-            } else {
-                mrMap.set(mr.iid, { mr, roles: new Set(['Reviewer']) });
-            }
-        }
-
-        // 并行检查每个 MR 的审批状态，过滤掉当前用户已审批的
-        const candidates = [...mrMap.values()];
-        const approvedResults = await Promise.all(
-            candidates.map(({ mr }) => this.hasApprovedByUser(mr, username))
-        );
-        const filtered = candidates.filter((_, i) => !approvedResults[i]);
-
-        // 按更新时间降序排列
-        const sorted = filtered.sort(
-            (a, b) => new Date(b.mr.updated_at).getTime() - new Date(a.mr.updated_at).getTime()
-        );
-
-        return sorted.map(({ mr, roles }) => {
-            const author = mr.author?.name ?? 'Unknown';
-            const branches = `${mr.source_branch} → ${mr.target_branch}`;
-            const roleStr = [...roles].join(' & ');
-            const mergeStatus = mr.merge_status ?? '';
-
-            const descParts = [`MR (${roleStr})`, `Author: ${author}`, branches];
-            if (mergeStatus && mergeStatus !== 'unchecked') {
-                descParts.push(`Merge: ${mergeStatus}`);
-            }
-
-            return {
-                gitlabMrId: String(mr.iid),
-                title: `[MR!${mr.iid}] ${mr.title}`,
-                description: descParts.join(' | '),
-                status: mr.state,
-                url: mr.web_url,
-            };
-        });
-    }
-
-    /**
-     * 检查当前用户是否已审批指定 MR
-     * 调用 /api/v4/projects/:id/merge_requests/:iid/approvals
-     */
-    private async hasApprovedByUser(mr: { project_id?: number; iid: number }, username: string): Promise<boolean> {
-        const projectId = mr.project_id;
-        if (!projectId) { return false; }
-        try {
-            type ApprovalInfo = {
-                approved_by?: Array<{ user: { username: string } }>;
-            };
-            const approvals = await this.request<ApprovalInfo>(
-                `/api/v4/projects/${projectId}/merge_requests/${mr.iid}/approvals`
-            );
-            return (approvals.approved_by ?? []).some(
-                a => a.user.username === username
-            );
-        } catch {
-            // 如果查询失败（权限不足或接口不存在），保守处理：不过滤
-            return false;
-        }
-    }
-
-    /**
-     * 获取当前 GitLab 用户的 username（缓存）
-     */
-    private _cachedUsername: string | null = null;
-    private async getCurrentUser(): Promise<string | null> {
-        if (this._cachedUsername) { return this._cachedUsername; }
-        try {
-            const user = await this.request<{ username: string; name: string }>('/api/v4/user');
-            this._cachedUsername = user.username;
-            return user.username;
-        } catch (err) {
-            console.error('Failed to get GitLab user:', err);
-            return null;
-        }
-    }
-
-    /**
-     * 一步到位：获取与我相关的所有 open MR
-     * 返回 null 表示未配置
-     */
-    public async fetchMyMRs(): Promise<GitLabSyncItem[] | null> {
-        this.reloadConfig();
-        if (!this.isConfigured()) { return null; }
-        return this.getMyMergeRequests();
     }
 }

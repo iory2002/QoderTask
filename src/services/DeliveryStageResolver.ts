@@ -187,6 +187,10 @@ export function resolveStage(input: StageInput): StageResult {
     }
 
     if (cardMr.state === 'opened') {
+        if (!cardMr.approvalsKnown) {
+            evidence.push('MR 仍开着，但 /approvals 取数失败，无法判断是否已批准');
+            return { stage: 'unknown', buildFailed: false, buildChannel: input.buildChannel, cardMr, evidence };
+        }
         if (cardMr.approved) {
             evidence.push(
                 `已批准（approvals_left=${cardMr.approvalsLeft ?? 0}${

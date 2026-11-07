@@ -18,6 +18,8 @@ export interface MrFact {
     approved: boolean;
     approvedBy: string[];
     approvalsLeft: number | null;
+    /** false = /approvals 取数失败，此时「未批准」不可信，阶段只能判无法判定 */
+    approvalsKnown: boolean;
     mergedAt?: string;
     /** 靠什么关联到这张卡：标题 > 描述 > 分支名 */
     matchedBy: 'title' | 'description' | 'branch';
@@ -85,8 +87,6 @@ export interface Freshness {
     stale: boolean;
     /** 失败原因，人类可读 */
     error: string | null;
-    /** 正在进行一轮请求 */
-    loading: boolean;
 }
 
 export type NoticeLevel = 'info' | 'warn' | 'error';

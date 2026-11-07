@@ -13,15 +13,7 @@ interface ScrumBuddyJiraConfig {
     defaultBoardId?: number;
 }
 
-/** 从 Jira 同步回来的简化 issue 结构（旧侧边栏仍在用，11 号票下线） */
-export interface JiraSyncItem {
-    jiraKey: string;
-    title: string;
-    description: string;
-    status: string;
-    url: string;
-}
-
+/** Jira board 的列定义与 rank 字段 */
 export interface JiraBoardConfig {
     columns: BoardColumn[];
     /** Jira Rank 所在的自定义字段，如 customfield_10005 */
@@ -209,33 +201,6 @@ export class JiraService {
             payload.fields = fields;
         }
         await this.request('POST', `/rest/api/2/issue/${encodeURIComponent(key)}/transitions`, payload, 20000);
-    }
-
-    /**
-     * 旧侧边栏用的入口，11 号票随侧边栏一起下线。
-     */
-    public async fetchMyCurrentSprintIssues(boardId?: number): Promise<JiraSyncItem[] | null> {
-        this.reloadConfig();
-        if (!this.isConfigured()) {
-            return null;
-        }
-        const sprint = await this.getActiveSprint(boardId ?? this.getDefaultBoardId());
-        if (!sprint) {
-            return null;
-        }
-        const jql = `sprint = ${sprint.id} AND assignee = currentUser() AND status not in (Resolved, Closed, Done)`;
-        const result = await this.search(jql, ['summary', 'status', 'issuetype', 'priority', 'description']);
-        return result.issues.map((raw) => {
-            const type = raw.fields.issuetype?.name ?? 'Task';
-            const priority = raw.fields.priority?.name ?? '';
-            return {
-                jiraKey: raw.key,
-                title: `[${raw.key}] ${raw.fields.summary ?? ''}`,
-                description: [type, priority].filter(Boolean).join(' | '),
-                status: raw.fields.status?.name ?? 'Unknown',
-                url: this.browseUrl(raw.key),
-            };
-        });
     }
 
     /**

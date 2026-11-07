@@ -52,8 +52,3 @@ export function readConfig(): BoardConfig {
         repos,
     };
 }
-
-/** 某个 Jira 项目对应的 repo 条目；没有条目 = 该项目不做阶段追踪 */
-export function repoForProject(config: BoardConfig, project: string): RepoConfig | undefined {
-    return config.repos.find((repo) => repo.jiraProjects.includes(project));
-}

@@ -13,7 +13,11 @@ export function activate(context: vscode.ExtensionContext) {
 
         const openBoard = () => {
             BoardPanel.createOrShow(context.extensionUri, {
-                onReady: () => boardState?.setVisible(true),
+                onReady: () => {
+                    boardState?.setVisible(true);
+                    // WebView 可能刚被重建：即使数据没变也要把当前状态推过去
+                    boardState?.republish();
+                },
                 onRefresh: (force) => boardState?.refresh(force),
                 onScopeChange: (scope) => {
                     boardState?.setScope(scope);
