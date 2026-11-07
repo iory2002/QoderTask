@@ -59,6 +59,8 @@ npm install
 npm run package
 ```
 
+Run the unit tests with `npm test` (no IDE, no network required).
+
 Then install the generated `.vsix`:
 
 ```bash
