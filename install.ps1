@@ -1,110 +1,59 @@
-#!/usr/bin/env pwsh
-# Jira Board Extension Installer
-# Builds, packages, and installs the Jira Board extension
-
+# Jira Board extension installer: build, package, install.
+# Run from a normal terminal with QoderCN fully closed (Ctrl+Q) — the running
+# IDE locks ~/.qoder-cn/extensions and the CLI then fails with EPERM.
 $ErrorActionPreference = "Stop"
 
-# Colors for output
-function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
-function Write-Success($msg) { Write-Host "==> $msg" -ForegroundColor Green }
-function Write-Err($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red }
+Write-Host "=== Jira Board: build, package, install ===" -ForegroundColor Cyan
 
-# Get script directory
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Push-Location $scriptDir
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $root
 
 try {
-    # Step 1: Find CLI (try PATH first, then common install locations)
-    Write-Step "Looking for QoderCN / VS Code CLI..."
-    $qoderCli = $null
+    $pkg = Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json
+    $version = $pkg.version
+    $vsix = Join-Path $root "todo-panel-$version.vsix"
 
-    # 优先从 PATH 中查找 qoder-cn
-    $found = Get-Command qoder-cn -ErrorAction SilentlyContinue
-    if ($found) {
-        $qoderCli = $found.Source
-    }
-
-    # 其次从 PATH 中查找 code（标准 VS Code CLI）
-    if (-not $qoderCli) {
-        $found = Get-Command code -ErrorAction SilentlyContinue
-        if ($found) {
-            $qoderCli = $found.Source
-        }
-    }
-
-    # 最后尝试常见安装路径
-    if (-not $qoderCli) {
-        $candidates = @(
-            "$env:ProgramFiles\QoderCN\bin\qoder-cn.cmd",
-            "${env:ProgramFiles(x86)}\QoderCN\bin\qoder-cn.cmd",
-            "$env:LOCALAPPDATA\Programs\QoderCN\bin\qoder-cn.cmd",
-            "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd",
-            "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd"
-        )
-        foreach ($c in $candidates) {
-            if (Test-Path $c) {
-                $qoderCli = $c
-                break
-            }
-        }
-    }
-
-    if (-not $qoderCli) {
-        Write-Err "QoderCN / VS Code CLI not found"
-        Write-Host "    Please ensure QoderCN or VS Code is installed and in PATH." -ForegroundColor Yellow
-        exit 1
-    }
-    Write-Host "    Found: $qoderCli"
-
-    # Step 2: Install npm dependencies
-    Write-Step "Installing dependencies..."
+    # 1) 构建 + 打包（compile 已包含 tsc、webview 类型检查与 esbuild，package 还会校验 media/board.js）
+    Write-Host "==> npm install" -ForegroundColor Cyan
     npm install
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "npm install failed"
-        exit 1
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+
+    Write-Host "==> npm run package" -ForegroundColor Cyan
+    npm run package
+    if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
+    if (-not (Test-Path $vsix)) { throw "未生成 $vsix" }
+
+    # 2) 安装：先试官方 CLI，失败则解压兜底
+    $cli = "C:\Program Files\QoderCN\bin\code.cmd"
+    $installed = $false
+
+    if (Test-Path $cli) {
+        Write-Host "==> 通过 QoderCN CLI 安装" -ForegroundColor Cyan
+        & $cli --install-extension $vsix --force
+        $installed = $LASTEXITCODE -eq 0
     }
 
-    # Step 3: Compile TypeScript
-    Write-Step "Compiling TypeScript..."
-    npx tsc -p ./
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "TypeScript compilation failed"
-        exit 1
+    if (-not $installed) {
+        Write-Host "==> CLI 不可用或失败，解压安装" -ForegroundColor Yellow
+        $extRoot = Join-Path $env:USERPROFILE ".qoder-cn\extensions"
+        $target = Join-Path $extRoot "your-name.todo-panel-$version"
+
+        Get-ChildItem $extRoot -Filter "your-name.todo-panel*" -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Recurse -Force }
+
+        $temp = Join-Path $env:TEMP ("vsix-" + [guid]::NewGuid().ToString('N'))
+        Add-Type -Assembly System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($vsix, $temp)
+        Copy-Item (Join-Path $temp 'extension') $target -Recurse -Force
+        Remove-Item $temp -Recurse -Force
+
+        foreach ($rel in @('package.json', 'out\extension.js', 'media\board.js')) {
+            if (-not (Test-Path (Join-Path $target $rel))) { throw "安装后缺少 $rel" }
+        }
     }
 
-    # Step 4: Clean old VSIX files
-    Write-Step "Cleaning old VSIX files..."
-    Get-ChildItem -Filter "*.vsix" -ErrorAction SilentlyContinue | Remove-Item -Force
-
-    # Step 5: Package VSIX
-    Write-Step "Packaging VSIX..."
-    npx vsce package --allow-missing-repository
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "VSIX packaging failed"
-        exit 1
-    }
-
-    # Step 6: Find generated VSIX
-    $vsix = Get-ChildItem -Filter "*.vsix" | Select-Object -First 1
-    if (-not $vsix) {
-        Write-Err "VSIX file not found after packaging"
-        exit 1
-    }
-    Write-Host "    Packaged: $($vsix.Name)"
-
-    # Step 7: Install via QoderCN CLI
-    Write-Step "Installing via QoderCN CLI..."
-    & $qoderCli --install-extension $vsix.FullName
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "Extension installation failed"
-        exit 1
-    }
-
-    Write-Success "Jira Board extension installed successfully!"
-    Write-Host ""
-    Write-Host "Please reload your editor to activate the extension:" -ForegroundColor Yellow
-    Write-Host "    Press Ctrl+Shift+P and type 'Reload Window'" -ForegroundColor Yellow
-
+    Write-Host "OK - 已安装 $version" -ForegroundColor Green
+    Write-Host "启动 QoderCN，点活动栏的 Jira Board 图标。首次打开会拉取 board 列与活跃 sprint。"
 } finally {
     Pop-Location
 }
