@@ -182,7 +182,6 @@ export type WebviewRequest =
     | { type: 'board:ready'; requestId?: string }
     | { type: 'board:refresh'; requestId?: string; payload?: { force?: boolean } }
     | { type: 'board:setScope'; requestId?: string; payload: BoardScope }
-    | { type: 'card:openDetail'; requestId?: string; payload: { key: string } }
     | { type: 'card:fetchTransitions'; requestId?: string; payload: { key: string; columnId: string } }
     | { type: 'card:transition'; requestId?: string; payload: TransitionWriteRequest }
     | { type: 'card:openJira'; requestId?: string; payload: { key: string } }

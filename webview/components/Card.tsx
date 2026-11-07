@@ -32,13 +32,15 @@ export function Card({
     card,
     showAvatar,
     onOpenJira,
+    onOpenDetail,
 }: {
     card: BoardCard;
     showAvatar: boolean;
     onOpenJira: (key: string) => void;
+    onOpenDetail: (key: string) => void;
 }) {
     return (
-        <article class="card" data-key={card.key} title={card.summary}>
+        <article class="card" data-key={card.key} title={card.summary} onClick={() => onOpenDetail(card.key)}>
             <div class="row1">
                 <span class={`type ${typeClass(card.issueType)}`} title={card.issueType}>
                     {initial(card.issueType)}

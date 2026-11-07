@@ -2,7 +2,15 @@ import type { BoardStatePayload } from '../../src/models/Board';
 import { post } from '../api';
 import { Card } from './Card';
 
-export function Board({ state, onRetry }: { state: BoardStatePayload; onRetry: () => void }) {
+export function Board({
+    state,
+    onRetry,
+    onOpenDetail,
+}: {
+    state: BoardStatePayload;
+    onRetry: () => void;
+    onOpenDetail: (key: string) => void;
+}) {
     if (state.columns.length === 0) {
         return (
             <div class="placeholder error">
@@ -32,7 +40,13 @@ export function Board({ state, onRetry }: { state: BoardStatePayload; onRetry: (
                         </h2>
                         {cards.length === 0 ? <div class="col-empty">空</div> : null}
                         {cards.map((card) => (
-                            <Card key={card.key} card={card} showAvatar={showAvatar} onOpenJira={openJira} />
+                            <Card
+                                key={card.key}
+                                card={card}
+                                showAvatar={showAvatar}
+                                onOpenJira={openJira}
+                                onOpenDetail={onOpenDetail}
+                            />
                         ))}
                     </section>
                 );
