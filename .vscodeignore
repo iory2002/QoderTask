@@ -12,7 +12,7 @@ tsconfig.test.json
 docs/**
 node_modules/**
 node_modules/sharp/**
-*.map
+**/*.map
 *.ts
 !out/**/*.js
 !media/**

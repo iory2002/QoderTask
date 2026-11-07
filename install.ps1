@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
-# Todo Panel Extension Installer
-# Builds, packages, and installs the Todo Panel extension
+# Jira Board Extension Installer
+# Builds, packages, and installs the Jira Board extension
 
 $ErrorActionPreference = "Stop"
 
@@ -100,7 +100,7 @@ try {
         exit 1
     }
 
-    Write-Success "Todo Panel extension installed successfully!"
+    Write-Success "Jira Board extension installed successfully!"
     Write-Host ""
     Write-Host "Please reload your editor to activate the extension:" -ForegroundColor Yellow
     Write-Host "    Press Ctrl+Shift+P and type 'Reload Window'" -ForegroundColor Yellow

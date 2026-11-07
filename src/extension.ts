@@ -1,108 +1,61 @@
 import * as vscode from 'vscode';
-import { TodoWebviewProvider } from './providers/TodoWebviewProvider';
-import { LocalFileTodoService } from './services/LocalFileTodoService';
-import { JiraService } from './services/JiraService';
-import { GitLabService } from './services/GitLabService';
-import { BoardPanel } from './board/BoardPanel';
-import { BoardEntryView } from './board/BoardEntryView';
-import { BoardState } from './board/BoardState';
 
-let provider: TodoWebviewProvider;
-let service: LocalFileTodoService;
+import { BoardEntryView } from './board/BoardEntryView';
+import { BoardPanel } from './board/BoardPanel';
+import { BoardState } from './board/BoardState';
+import { JiraService } from './services/JiraService';
+
 let boardState: BoardState | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
     try {
-        // 使用工作区存储路径，若无工作区则使用全局存储
-        const storagePath = context.storageUri?.fsPath || context.globalStorageUri.fsPath;
+        boardState = new BoardState();
 
-        // 初始化数据服务（可替换为其他实现）
-        service = new LocalFileTodoService(storagePath);
-
-        // 初始化 Jira 服务
-        const jiraService = new JiraService();
-
-        // 初始化 GitLab 服务
-        const gitlabService = new GitLabService();
-
-        // 注册 WebView 提供者
-        provider = new TodoWebviewProvider(context.extensionUri, service, jiraService, gitlabService);
+        const openBoard = () => {
+            BoardPanel.createOrShow(context.extensionUri, {
+                onReady: () => boardState?.setVisible(true),
+                onRefresh: (force) => boardState?.refresh(force),
+                onScopeChange: (scope) => {
+                    boardState?.setScope(scope);
+                    return boardState?.refresh(true);
+                },
+                onFetchTransitions: (key) => boardState?.fetchTransitions(key),
+                onTransition: (request) => boardState?.transition(request),
+                onOpenJira: (key) => openJiraIssue(key),
+                onOpenExternal: (url) => openExternal(url),
+                onVisibilityChanged: (visible) => boardState?.setVisible(visible),
+                onDisposed: () => boardState?.setVisible(false),
+            });
+        };
 
         context.subscriptions.push(
-            vscode.window.registerWebviewViewProvider(
-                TodoWebviewProvider.viewType,
-                provider,
-                { webviewOptions: { retainContextWhenHidden: true } }
-            )
+            vscode.commands.registerCommand('todoPanel.openBoard', () => openBoard())
         );
 
-        // 注册命令
+        // 原来的「同步 Jira」命令重定义为「刷新看板」，不再有语义重叠的入口
         context.subscriptions.push(
-            vscode.commands.registerCommand('todoPanel.addTodo', () => {
-                provider.refresh();
+            vscode.commands.registerCommand('todoPanel.refresh', async () => {
+                if (!BoardPanel.exists()) {
+                    openBoard();
+                    return;
+                }
+                await boardState?.refresh(true);
             })
         );
 
+        const entry = new BoardEntryView(context.extensionUri, openBoard);
         context.subscriptions.push(
-            vscode.commands.registerCommand('todoPanel.refresh', () => {
-                provider.syncWithJira();
+            vscode.window.registerWebviewViewProvider(BoardEntryView.viewType, entry, {
+                webviewOptions: { retainContextWhenHidden: false },
             })
         );
 
-        context.subscriptions.push(
-            vscode.commands.registerCommand('todoPanel.syncGitLab', () => {
-                provider.syncWithGitLab();
-            })
-        );
-
-        context.subscriptions.push(
-            vscode.commands.registerCommand('todoPanel.clearAll', () => {
-                provider.clearAll();
-            })
-        );
-
-        registerBoard(context);
         context.subscriptions.push({ dispose: () => boardState?.dispose() });
-
-        console.log('Todo Panel extension activated, storage:', storagePath);
-    } catch (err) {
-        console.error('Todo Panel activation failed:', err);
-        vscode.window.showErrorMessage('Todo Panel activation failed: ' + err);
+        console.log('[jira-board] extension activated');
+    } catch (error) {
+        console.error('[jira-board] activation failed', error);
+        vscode.window.showErrorMessage(`Jira Board 启动失败：${error}`);
     }
-}
-
-function registerBoard(context: vscode.ExtensionContext): void {
-    boardState = new BoardState();
-
-    const openBoard = () => {
-        BoardPanel.createOrShow(context.extensionUri, {
-            onReady: () => boardState?.setVisible(true),
-            onRefresh: (force) => boardState?.refresh(force),
-            onScopeChange: (scope) => {
-                boardState?.setScope(scope);
-                return boardState?.refresh(true);
-            },
-            onOpenJira: (key) => openJiraIssue(key),
-            onOpenExternal: (url) => openExternal(url),
-            onFetchTransitions: (key) => boardState?.fetchTransitions(key),
-            onTransition: (request) => boardState?.transition(request),
-            onVisibilityChanged: (visible) => {
-                boardState?.setVisible(visible);
-            },
-            onDisposed: () => boardState?.setVisible(false),
-        });
-    };
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('todoPanel.openBoard', () => openBoard())
-    );
-
-    const entry = new BoardEntryView(context.extensionUri, openBoard);
-    context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(BoardEntryView.viewType, entry, {
-            webviewOptions: { retainContextWhenHidden: false },
-        })
-    );
 }
 
 async function openJiraIssue(key: string): Promise<void> {

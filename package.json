@@ -1,10 +1,14 @@
 {
   "name": "todo-panel",
-  "displayName": "Todo Panel",
-  "description": "A sidebar panel for managing your to-do items",
-  "version": "0.2.7",
+  "displayName": "Jira Board",
+  "description": "在编辑器标签页里看 Jira 看板：五列取自 board 配置，卡片挂 GitLab / Jenkins 交付事实，拖一下就能把状态推进一步。",
+  "version": "0.3.0",
   "icon": "icon.png",
   "publisher": "your-name",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iory2002/QoderTask.git"
+  },
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -17,11 +21,6 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "todo-panel",
-          "title": "Todo Panel",
-          "icon": "$(checklist)"
-        },
-        {
           "id": "jira-board",
           "title": "Jira Board",
           "icon": "$(project)"
@@ -29,13 +28,6 @@
       ]
     },
     "views": {
-      "todo-panel": [
-        {
-          "type": "webview",
-          "id": "todoPanel.webview",
-          "name": "My Todos"
-        }
-      ],
       "jira-board": [
         {
           "type": "webview",
@@ -51,40 +43,11 @@
         "icon": "$(project)"
       },
       {
-        "command": "todoPanel.addTodo",
-        "title": "Add Todo",
-        "icon": "$(add)"
-      },
-      {
         "command": "todoPanel.refresh",
-        "title": "Sync Jira",
+        "title": "Jira Board: Refresh",
         "icon": "$(sync)"
-      },
-      {
-        "command": "todoPanel.syncGitLab",
-        "title": "Todo Panel: Sync GitLab MRs",
-        "icon": "$(git-merge)"
-      },
-      {
-        "command": "todoPanel.clearAll",
-        "title": "Clear All",
-        "icon": "$(trash)"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "todoPanel.addTodo",
-          "when": "view == todoPanel.webview",
-          "group": "navigation"
-        },
-        {
-          "command": "todoPanel.clearAll",
-          "when": "view == todoPanel.webview",
-          "group": "navigation"
-        }
-      ]
-    },
     "configuration": {
       "title": "Jira Board",
       "properties": {
@@ -158,7 +121,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./ && tsc -p tsconfig.webview.json && node build-webview.js",
+    "compile": "node scripts/clean-out.js && tsc -p ./ && tsc -p tsconfig.webview.json && node build-webview.js",
     "build:webview": "node build-webview.js",
     "watch:webview": "node build-webview.js --watch",
     "watch": "tsc -watch -p ./",
