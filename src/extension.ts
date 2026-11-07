@@ -84,6 +84,7 @@ function registerBoard(context: vscode.ExtensionContext): void {
             },
             onOpenJira: (key) => openJiraIssue(key),
             onOpenExternal: (url) => openExternal(url),
+            onFetchTransitions: (key) => boardState?.fetchTransitions(key),
             onVisibilityChanged: (visible) => {
                 boardState?.setVisible(visible);
             },

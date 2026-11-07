@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 
-import type { BoardStatePayload, ExtensionResponse } from '../src/models/Board';
+import type { BoardStatePayload, ExtensionResponse, TransitionAvailability } from '../src/models/Board';
 import { onMessage, post } from './api';
 
 export interface BoardModel {
     state: BoardStatePayload | null;
     error: string | null;
+    /** 正在拖拽的那张卡可用的动作；null = 没有拖拽或还没拿到 */
+    availability: TransitionAvailability | null;
     refresh(force?: boolean): void;
     setScope(projects: string[], onlyMine: boolean): void;
+    fetchTransitions(key: string): void;
+    clearAvailability(): void;
 }
 
 /**
@@ -17,6 +21,7 @@ export interface BoardModel {
 export function useBoardModel(): BoardModel {
     const [state, setState] = useState<BoardStatePayload | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [availability, setAvailability] = useState<TransitionAvailability | null>(null);
 
     useEffect(() => {
         const off = onMessage((message: ExtensionResponse) => {
@@ -28,6 +33,8 @@ export function useBoardModel(): BoardModel {
                     return message.payload;
                 });
                 setError(null);
+            } else if (message.type === 'card:transitions') {
+                setAvailability(message.payload);
             } else if (message.type === 'board:error') {
                 setError(message.payload.message);
             }
@@ -40,10 +47,13 @@ export function useBoardModel(): BoardModel {
         () => ({
             state,
             error,
+            availability,
             refresh: (force?: boolean) => post({ type: 'board:refresh', payload: { force } }),
             setScope: (projects: string[], onlyMine: boolean) =>
                 post({ type: 'board:setScope', payload: { projects, onlyMine } }),
+            fetchTransitions: (key: string) => post({ type: 'card:fetchTransitions', payload: { key } }),
+            clearAvailability: () => setAvailability(null),
         }),
-        [state, error]
+        [state, error, availability]
     );
 }

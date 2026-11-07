@@ -14,6 +14,7 @@ import { associateMrs, toMrFacts } from '../services/MrAssociation';
 import { resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { BoardPanel } from './BoardPanel';
 import { ConfigError, describeError } from './errors';
+import { computeDropRules } from './dropRules';
 import { revisionOf } from './fingerprint';
 import { readConfig, type BoardConfig, type RepoConfig } from './config';
 
@@ -476,6 +477,39 @@ export class BoardState {
             });
         }
         return notices;
+    }
+
+    /**
+     * 拖拽合法性：每次拖拽都重新拉 transitions，不跨交互复用。
+     * 合法 = 该 issue 当前可用的某个 transition 的 to.statusId 命中目标列，与列相邻与否无关。
+     */
+    public async fetchTransitions(key: string): Promise<void> {
+        const card = this.cards.find((candidate) => candidate.key === key);
+        if (!card) {
+            throw new Error(`卡片 ${key} 不在当前看板上，先刷新一次`);
+        }
+
+        const transitions = await this.jira.getTransitions(key);
+        const drops = computeDropRules({
+            columns: this.columns,
+            currentStatusId: card.statusId,
+            transitions: transitions.map((transition) => ({
+                id: transition.id,
+                name: transition.name,
+                toStatusId: String(transition.to?.id ?? ''),
+            })),
+        });
+        const currentIndex = this.columns.findIndex((column) => column.statusIds.includes(card.statusId));
+
+        BoardPanel.post({
+            type: 'card:transitions',
+            payload: {
+                key,
+                jiraUrl: this.jira.browseUrl(key),
+                currentColumnId: currentIndex >= 0 ? this.columns[currentIndex].id : null,
+                drops,
+            },
+        });
     }
 
     private publish(): void {

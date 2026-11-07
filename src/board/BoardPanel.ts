@@ -11,7 +11,7 @@ export interface BoardPanelDelegate {
     onReady(panel: BoardPanel): void | Promise<void>;
     onRefresh(force: boolean): void | Promise<void>;
     onScopeChange(scope: BoardScope): void | Promise<void>;
-    onFetchTransitions(key: string, columnId: string): void | Promise<void>;
+    onFetchTransitions(key: string): void | Promise<void>;
     onTransition(request: TransitionWriteRequest): void | Promise<void>;
     onOpenJira(key: string): void | Promise<void>;
     onOpenExternal(url: string): void | Promise<void>;
@@ -120,8 +120,8 @@ export class BoardPanel {
                     await this.handlers.onScopeChange?.(message.payload as BoardScope);
                     return;
                 case 'card:fetchTransitions': {
-                    const payload = message.payload as { key: string; columnId: string };
-                    await this.handlers.onFetchTransitions?.(payload.key, payload.columnId);
+                    const payload = message.payload as { key: string };
+                    await this.handlers.onFetchTransitions?.(payload.key);
                     return;
                 }
                 case 'card:transition':

@@ -33,14 +33,34 @@ export function Card({
     showAvatar,
     onOpenJira,
     onOpenDetail,
+    onDragStart,
+    onDragEnd,
+    pending,
 }: {
     card: BoardCard;
     showAvatar: boolean;
     onOpenJira: (key: string) => void;
     onOpenDetail: (key: string) => void;
+    onDragStart: () => void;
+    onDragEnd: () => void;
+    pending: boolean;
 }) {
     return (
-        <article class="card" data-key={card.key} title={card.summary} onClick={() => onOpenDetail(card.key)}>
+        <article
+            class={pending ? 'card pending' : 'card'}
+            data-key={card.key}
+            title={card.summary}
+            draggable={!pending}
+            onClick={() => onOpenDetail(card.key)}
+            onDragStart={(event) => {
+                event.dataTransfer?.setData('text/plain', card.key);
+                if (event.dataTransfer) {
+                    event.dataTransfer.effectAllowed = 'move';
+                }
+                onDragStart();
+            }}
+            onDragEnd={onDragEnd}
+        >
             <div class="row1">
                 <span class={`type ${typeClass(card.issueType)}`} title={card.issueType}>
                     {initial(card.issueType)}

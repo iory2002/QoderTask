@@ -171,6 +171,26 @@ export interface TransitionWriteRequest {
     fields: Record<string, unknown>;
 }
 
+/** 单列的拖放合法性：拖拽开始时一次算完，拖到上面之前就能看出能不能放 */
+export interface ColumnDropRule {
+    columnId: string;
+    legal: boolean;
+    transitionId?: string;
+    transitionName?: string;
+    /** 不能放的原因（回退 / 没有直达动作 / 已在目标列） */
+    reason?: string;
+    /** 该 transition 需要填的表单（08 起使用） */
+    form?: TransitionForm;
+}
+
+export interface TransitionAvailability {
+    key: string;
+    jiraUrl: string;
+    /** 卡片当前所在列，null = 列外状态 */
+    currentColumnId: string | null;
+    drops: ColumnDropRule[];
+}
+
 export interface WebviewMessage {
     type: string;
     requestId?: string;
@@ -182,7 +202,7 @@ export type WebviewRequest =
     | { type: 'board:ready'; requestId?: string }
     | { type: 'board:refresh'; requestId?: string; payload?: { force?: boolean } }
     | { type: 'board:setScope'; requestId?: string; payload: BoardScope }
-    | { type: 'card:fetchTransitions'; requestId?: string; payload: { key: string; columnId: string } }
+    | { type: 'card:fetchTransitions'; requestId?: string; payload: { key: string } }
     | { type: 'card:transition'; requestId?: string; payload: TransitionWriteRequest }
     | { type: 'card:openJira'; requestId?: string; payload: { key: string } }
     | { type: 'board:openExternal'; requestId?: string; payload: { url: string } };
@@ -190,6 +210,7 @@ export type WebviewRequest =
 /** 扩展 → WebView */
 export type ExtensionResponse =
     | { type: 'board:state'; payload: BoardStatePayload }
+    | { type: 'card:transitions'; requestId?: string; payload: TransitionAvailability }
     | { type: 'card:transitionForm'; requestId?: string; payload: TransitionForm }
     | { type: 'card:transitionResult'; requestId?: string; payload: { key: string; ok: boolean; error?: string } }
     | { type: 'board:error'; requestId?: string; payload: { message: string } };
