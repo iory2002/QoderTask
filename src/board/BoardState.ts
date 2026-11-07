@@ -7,14 +7,16 @@ import type {
     Freshness,
     MrFact,
     Stage,
+    TransitionWriteRequest,
 } from '../models/Board';
-import { JiraService, type JiraIssue, type JiraSprint } from '../services/JiraService';
+import { JiraApiError, JiraService, type JiraIssue, type JiraSprint, type RawTransition } from '../services/JiraService';
 import { GitLabService, type GitLabApprovals } from '../services/GitLabService';
 import { associateMrs, toMrFacts } from '../services/MrAssociation';
 import { resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { BoardPanel } from './BoardPanel';
 import { ConfigError, describeError } from './errors';
 import { computeDropRules } from './dropRules';
+import { buildTransitionForm } from './transitionForm';
 import { revisionOf } from './fingerprint';
 import { readConfig, type BoardConfig, type RepoConfig } from './config';
 
@@ -55,6 +57,8 @@ export class BoardState {
     private visible = false;
     /** epic key → 标题，Epic chip 显示用；很少变，跨轮次缓存 */
     private readonly epicLabels = new Map<string, string>();
+    /** 最近一次拖拽拉到的 transitions：写入时按它校验并定位目标列，不跨交互复用 */
+    private lastInteraction: { key: string; transitions: RawTransition[] } | null = null;
 
     private readonly jira = new JiraService();
 
@@ -490,6 +494,7 @@ export class BoardState {
         }
 
         const transitions = await this.jira.getTransitions(key);
+        this.lastInteraction = { key, transitions };
         const drops = computeDropRules({
             columns: this.columns,
             currentStatusId: card.statusId,
@@ -500,6 +505,32 @@ export class BoardState {
             })),
         });
         const currentIndex = this.columns.findIndex((column) => column.statusIds.includes(card.statusId));
+
+        // 只有合法落点才需要表单；顺带把 issue 当前字段读回来做预填
+        const legalDrops = drops.filter((drop) => drop.legal);
+        if (legalDrops.length > 0) {
+            const issue = await this.jira.getIssue(key);
+            for (const drop of legalDrops) {
+                const transition = transitions.find((candidate) => candidate.id === drop.transitionId);
+                const column = this.columns.find((candidate) => candidate.id === drop.columnId);
+                if (!transition || !column) {
+                    continue;
+                }
+                drop.form = buildTransitionForm({
+                    key,
+                    column,
+                    transition: {
+                        id: transition.id,
+                        name: transition.name,
+                        toStatusId: String(transition.to?.id ?? ''),
+                        toStatusName: transition.to?.name ?? '',
+                    },
+                    fieldsMeta: transition.fields,
+                    issueFields: issue.fields ?? {},
+                    jiraUrl: this.jira.browseUrl(key),
+                });
+            }
+        }
 
         BoardPanel.post({
             type: 'card:transitions',
@@ -522,6 +553,56 @@ export class BoardState {
         }
         this.lastPublishedRevision = payload.revision;
         BoardPanel.post({ type: 'board:state', payload });
+    }
+
+    /**
+     * 单卡单次写入。只允许用最近一次拖拽拿到的 transition，
+     * 否则说明用户看到的动作已经过期，宁可让他重新拖一次。
+     */
+    public async transition(request: TransitionWriteRequest): Promise<void> {
+        const card = this.cards.find((candidate) => candidate.key === request.key);
+        const interaction = this.lastInteraction?.key === request.key ? this.lastInteraction : null;
+        const transition = interaction?.transitions.find((candidate) => candidate.id === request.transitionId);
+
+        if (!card || !transition) {
+            BoardPanel.post({
+                type: 'card:transitionResult',
+                payload: {
+                    key: request.key,
+                    ok: false,
+                    error: '这张卡可用的动作已经过期，请重新拖一次',
+                },
+            });
+            return;
+        }
+
+        try {
+            await this.jira.transition(request.key, request.transitionId, request.fields);
+
+            const toStatusId = String(transition.to?.id ?? '');
+            const column = this.columns.find((candidate) => candidate.statusIds.includes(toStatusId));
+            card.statusId = toStatusId;
+            card.columnName = column?.name ?? card.columnName;
+            this.lastInteraction = null;
+
+            BoardPanel.post({ type: 'card:transitionResult', payload: { key: request.key, ok: true } });
+            this.publish();
+            void this.refresh(true);
+        } catch (error) {
+            const described = describeError(error);
+            const fieldErrors = error instanceof JiraApiError ? error.fieldErrors : undefined;
+            const hasFieldErrors = fieldErrors !== undefined && Object.keys(fieldErrors).length > 0;
+
+            BoardPanel.post({
+                type: 'card:transitionResult',
+                payload: {
+                    key: request.key,
+                    ok: false,
+                    error: hasFieldErrors ? 'Jira 拒绝了这个请求，请按字段旁的提示修改' : described.message,
+                    fieldErrors: hasFieldErrors ? fieldErrors : undefined,
+                },
+            });
+        }
     }
 
     private buildPayload(): BoardStatePayload {

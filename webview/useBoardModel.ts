@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 
-import type { BoardStatePayload, ExtensionResponse, TransitionAvailability } from '../src/models/Board';
+import type {
+    BoardStatePayload,
+    ExtensionResponse,
+    TransitionAvailability,
+    TransitionResult,
+    TransitionWriteRequest,
+} from '../src/models/Board';
 import { onMessage, post } from './api';
 
 export interface BoardModel {
@@ -8,10 +14,14 @@ export interface BoardModel {
     error: string | null;
     /** 正在拖拽的那张卡可用的动作；null = 没有拖拽或还没拿到 */
     availability: TransitionAvailability | null;
+    /** 最近一次写入结果，消费完要 clear */
+    transitionResult: TransitionResult | null;
     refresh(force?: boolean): void;
     setScope(projects: string[], onlyMine: boolean): void;
     fetchTransitions(key: string): void;
     clearAvailability(): void;
+    submitTransition(request: TransitionWriteRequest): void;
+    clearTransitionResult(): void;
 }
 
 /**
@@ -22,6 +32,7 @@ export function useBoardModel(): BoardModel {
     const [state, setState] = useState<BoardStatePayload | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [availability, setAvailability] = useState<TransitionAvailability | null>(null);
+    const [transitionResult, setTransitionResult] = useState<TransitionResult | null>(null);
 
     useEffect(() => {
         const off = onMessage((message: ExtensionResponse) => {
@@ -35,6 +46,8 @@ export function useBoardModel(): BoardModel {
                 setError(null);
             } else if (message.type === 'card:transitions') {
                 setAvailability(message.payload);
+            } else if (message.type === 'card:transitionResult') {
+                setTransitionResult(message.payload);
             } else if (message.type === 'board:error') {
                 setError(message.payload.message);
             }
@@ -48,12 +61,15 @@ export function useBoardModel(): BoardModel {
             state,
             error,
             availability,
+            transitionResult,
             refresh: (force?: boolean) => post({ type: 'board:refresh', payload: { force } }),
             setScope: (projects: string[], onlyMine: boolean) =>
                 post({ type: 'board:setScope', payload: { projects, onlyMine } }),
             fetchTransitions: (key: string) => post({ type: 'card:fetchTransitions', payload: { key } }),
             clearAvailability: () => setAvailability(null),
+            submitTransition: (request: TransitionWriteRequest) => post({ type: 'card:transition', payload: request }),
+            clearTransitionResult: () => setTransitionResult(null),
         }),
-        [state, error, availability]
+        [state, error, availability, transitionResult]
     );
 }

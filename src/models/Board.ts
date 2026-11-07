@@ -171,6 +171,15 @@ export interface TransitionWriteRequest {
     fields: Record<string, unknown>;
 }
 
+export interface TransitionResult {
+    key: string;
+    ok: boolean;
+    /** 整体失败原因（人话） */
+    error?: string;
+    /** 字段级错误：fieldId → 说明；直接回填到对应控件 */
+    fieldErrors?: Record<string, string>;
+}
+
 /** 单列的拖放合法性：拖拽开始时一次算完，拖到上面之前就能看出能不能放 */
 export interface ColumnDropRule {
     columnId: string;
@@ -212,5 +221,5 @@ export type ExtensionResponse =
     | { type: 'board:state'; payload: BoardStatePayload }
     | { type: 'card:transitions'; requestId?: string; payload: TransitionAvailability }
     | { type: 'card:transitionForm'; requestId?: string; payload: TransitionForm }
-    | { type: 'card:transitionResult'; requestId?: string; payload: { key: string; ok: boolean; error?: string } }
+    | { type: 'card:transitionResult'; requestId?: string; payload: TransitionResult }
     | { type: 'board:error'; requestId?: string; payload: { message: string } };
