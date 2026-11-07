@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 
 import type { BoardColumn, ColumnDropRule, TransitionForm } from '../src/models/Board';
+import { checkSoftGate, type GateCheck } from '../src/board/softGate';
 import { Board } from './components/Board';
 import { Banners } from './components/Banners';
 import { DetailPanel } from './components/DetailPanel';
+import { SoftGateDialog } from './components/SoftGateDialog';
 import { TopBar } from './components/TopBar';
 import { TransitionDialog } from './components/TransitionDialog';
 import { showToast, Toaster } from './toast';
@@ -14,6 +16,7 @@ export function App() {
     const state = model.state;
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     const [form, setForm] = useState<TransitionForm | null>(null);
+    const [gate, setGate] = useState<{ form: TransitionForm; check: GateCheck; columnName: string } | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -48,21 +51,32 @@ export function App() {
         model.clearTransitionResult();
     }, [result]);
 
-    const handleDrop = useCallback((cardKey: string, column: BoardColumn, rule: ColumnDropRule) => {
-        if (!rule.legal) {
-            showToast(rule.reason ?? `不能放到「${column.name}」`, 'error');
-            return;
-        }
-        if (!rule.form) {
-            showToast('这张卡的表单还没准备好，请重新拖一次', 'error');
-            return;
-        }
-        setSubmitError(null);
-        setFieldErrors({});
-        setSubmitting(false);
-        setForm(rule.form);
-        void cardKey;
-    }, []);
+    const handleDrop = useCallback(
+        (cardKey: string, column: BoardColumn, rule: ColumnDropRule) => {
+            if (!rule.legal) {
+                showToast(rule.reason ?? `不能放到「${column.name}」`, 'error');
+                return;
+            }
+            if (!rule.form) {
+                showToast('这张卡的表单还没准备好，请重新拖一次', 'error');
+                return;
+            }
+
+            setSubmitError(null);
+            setFieldErrors({});
+            setSubmitting(false);
+
+            // 阶段没达标时先亮出缺什么，由用户决定要不要继续
+            const card = state?.cards.find((candidate) => candidate.key === cardKey);
+            const check = card ? checkSoftGate(card, column.name) : { required: false, items: [], consequence: '' };
+            if (check.required) {
+                setGate({ form: rule.form, check, columnName: column.name });
+                return;
+            }
+            setForm(rule.form);
+        },
+        [state]
+    );
 
     const submit = useCallback(
         (fields: Record<string, unknown>) => {
@@ -103,6 +117,19 @@ export function App() {
                 </div>
             )}
             {state && selected ? <DetailPanel card={selected} state={state} onClose={closeDetail} /> : null}
+            {gate ? (
+                <SoftGateDialog
+                    title={`推到 ${gate.columnName} 前，交付阶段未达标`}
+                    items={gate.check.items}
+                    consequence={gate.check.consequence}
+                    onCancel={() => setGate(null)}
+                    onProceed={() => {
+                        const pendingForm = gate.form;
+                        setGate(null);
+                        setForm(pendingForm);
+                    }}
+                />
+            ) : null}
             {form ? (
                 <TransitionDialog
                     form={form}

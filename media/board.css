@@ -178,6 +178,7 @@ dialog::backdrop { background: rgba(20, 24, 32, .35); }
 
 /* 详情浮层 */
 .transition-dialog { width: 520px; }
+.soft-gate { width: 460px; }
 .detail-backdrop { position: fixed; inset: 0; z-index: 35; background: rgba(20, 24, 32, .18); }
 .detail {
   position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw; z-index: 40;

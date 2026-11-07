@@ -49,7 +49,6 @@ export class BoardState {
     private notices: BoardNotice[] = [];
     /** 阶段解析产生的告警（GitLab 未配置 / 取数失败），每轮重建 */
     private stageNotices: BoardNotice[] = [];
-    private pendingKeys: string[] = [];
     private lastPublishedRevision = '';
     private inFlight = false;
     private disposed = false;
@@ -59,6 +58,11 @@ export class BoardState {
     private readonly epicLabels = new Map<string, string>();
     /** 最近一次拖拽拉到的 transitions：写入时按它校验并定位目标列，不跨交互复用 */
     private lastInteraction: { key: string; transitions: RawTransition[] } | null = null;
+    /** 写入中的卡片：乐观移动后要顶住轮询，失败要能弹回 */
+    private readonly pending = new Map<
+        string,
+        { prevStatusId: string; prevColumnName: string; nextStatusId: string; nextColumnName: string }
+    >();
 
     private readonly jira = new JiraService();
 
@@ -152,6 +156,7 @@ export class BoardState {
 
             this.cards = this.sprint ? await this.fetchCards(this.sprint) : [];
             await this.applyStages(this.cards, config);
+            this.reapplyPending();
 
             console.log(
                 `[jira-board] board ${config.boardId} 列定义：` +
@@ -577,18 +582,37 @@ export class BoardState {
         }
 
         try {
+            // 乐观移动：先让卡片进目标列并带上「提交中」，再等 Jira 回话
+            const toStatusId = String(transition.to?.id ?? '');
+            const targetColumn = this.columns.find((candidate) => candidate.statusIds.includes(toStatusId));
+            this.pending.set(request.key, {
+                prevStatusId: card.statusId,
+                prevColumnName: card.columnName,
+                nextStatusId: toStatusId,
+                nextColumnName: targetColumn?.name ?? card.columnName,
+            });
+            this.reapplyPending();
+            this.publish();
+
             await this.jira.transition(request.key, request.transitionId, request.fields);
 
-            const toStatusId = String(transition.to?.id ?? '');
-            const column = this.columns.find((candidate) => candidate.statusIds.includes(toStatusId));
+            this.pending.delete(request.key);
             card.statusId = toStatusId;
-            card.columnName = column?.name ?? card.columnName;
+            card.columnName = targetColumn?.name ?? card.columnName;
             this.lastInteraction = null;
 
             BoardPanel.post({ type: 'card:transitionResult', payload: { key: request.key, ok: true } });
             this.publish();
             void this.refresh(true);
         } catch (error) {
+            const pending = this.pending.get(request.key);
+            this.pending.delete(request.key);
+            if (pending) {
+                card.statusId = pending.prevStatusId;
+                card.columnName = pending.prevColumnName;
+            }
+            this.publish();
+
             const described = describeError(error);
             const fieldErrors = error instanceof JiraApiError ? error.fieldErrors : undefined;
             const hasFieldErrors = fieldErrors !== undefined && Object.keys(fieldErrors).length > 0;
@@ -605,6 +629,20 @@ export class BoardState {
         }
     }
 
+    /** 轮询拿回来的数据不得覆盖正在写入的卡片 */
+    private reapplyPending(): void {
+        if (this.pending.size === 0) {
+            return;
+        }
+        for (const card of this.cards) {
+            const entry = this.pending.get(card.key);
+            if (entry) {
+                card.statusId = entry.nextStatusId;
+                card.columnName = entry.nextColumnName;
+            }
+        }
+    }
+
     private buildPayload(): BoardStatePayload {
         const config = readConfig();
         const signature = revisionOf({
@@ -615,7 +653,7 @@ export class BoardState {
             notices: this.notices,
             stale: this.freshness.stale,
             error: this.freshness.error,
-            pending: this.pendingKeys,
+            pending: [...this.pending.keys()],
         });
 
         return {
@@ -628,7 +666,7 @@ export class BoardState {
             notices: this.notices,
             unmappedCount: this.unmappedCount(),
             sprintName: this.sprint?.name ?? null,
-            pendingKeys: this.pendingKeys,
+            pendingKeys: [...this.pending.keys()],
         };
     }
 
