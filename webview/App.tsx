@@ -1,4 +1,5 @@
 import { Board } from './components/Board';
+import { Banners } from './components/Banners';
 import { TopBar } from './components/TopBar';
 import { useBoardModel } from './useBoardModel';
 
@@ -14,8 +15,9 @@ export function App() {
                     <div class="banner error">{model.error}</div>
                 </div>
             ) : null}
+            {state ? <Banners notices={state.notices} stale={state.freshness.stale} /> : null}
             {state ? (
-                <Board state={state} />
+                <Board state={state} onRetry={() => model.refresh(true)} />
             ) : (
                 <div class="placeholder">
                     <h3>正在读取 Jira 看板…</h3>

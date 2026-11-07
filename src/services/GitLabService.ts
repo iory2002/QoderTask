@@ -22,6 +22,33 @@ export interface GitLabSyncItem {
     url: string;
 }
 
+export class GitLabApiError extends Error {
+    constructor(
+        public readonly status: number,
+        message: string,
+        public readonly body: string
+    ) {
+        super(message);
+        this.name = 'GitLabApiError';
+    }
+
+    public get readable(): string {
+        if (this.status === 401) {
+            return 'GitLab 认证失败：检查 ~/.scrumbuddy/config.json 的 gitlab.token';
+        }
+        if (this.status === 403) {
+            return 'GitLab 拒绝访问：token 权限不足（~/.scrumbuddy/config.json 的 gitlab.token）';
+        }
+        if (this.status === 404) {
+            return 'GitLab 项目或接口不存在：检查 todoPanel.repos 里的 gitlabProject 与 targetBranch';
+        }
+        if (this.status >= 500) {
+            return `GitLab 服务端错误 ${this.status}，稍后重试`;
+        }
+        return `GitLab 请求失败 ${this.status}`;
+    }
+}
+
 /**
  * GitLab 服务：读取 ScrumBuddy 配置，调用 GitLab REST API
  * 获取与当前用户相关的 Merge Requests（作者/审核者/被指派者）
@@ -81,7 +108,7 @@ export class GitLabService {
                     try {
                         const body = Buffer.concat(chunks).toString('utf-8');
                         if (res.statusCode && res.statusCode >= 400) {
-                            reject(new Error(`GitLab API error ${res.statusCode}: ${body.substring(0, 200)}`));
+                            reject(new GitLabApiError(res.statusCode, `GitLab API error ${res.statusCode}`, body));
                             return;
                         }
                         resolve(JSON.parse(body) as T);

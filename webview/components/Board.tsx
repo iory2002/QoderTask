@@ -1,11 +1,14 @@
 import type { BoardStatePayload } from '../../src/models/Board';
 
-export function Board({ state }: { state: BoardStatePayload }) {
+export function Board({ state, onRetry }: { state: BoardStatePayload; onRetry: () => void }) {
     if (state.columns.length === 0) {
         return (
-            <div class="placeholder">
-                <h3>看板骨架已就绪</h3>
-                <span>还没有从 Jira board 配置读到列定义。</span>
+            <div class="placeholder error">
+                <h3>读不到看板列</h3>
+                <span>{state.freshness.error ?? 'Jira 没有返回列定义'}</span>
+                <button class="btn" onClick={onRetry}>
+                    重试
+                </button>
             </div>
         );
     }
@@ -13,14 +16,15 @@ export function Board({ state }: { state: BoardStatePayload }) {
     return (
         <main class="board">
             {state.columns.map((column) => {
-                const count = state.cards.filter((card) => card.statusId && column.statusIds.includes(card.statusId)).length;
+                const cards = state.cards.filter((card) => column.statusIds.includes(card.statusId));
+                const isDone = column.name.toLowerCase() === 'done';
                 return (
-                    <section class="col" key={column.id}>
+                    <section class={isDone ? 'col done' : 'col'} key={column.id}>
                         <h2>
                             {column.name}
-                            <span>{count}</span>
+                            <span>{cards.length}</span>
                         </h2>
-                        {count === 0 ? <div class="col-empty">空</div> : null}
+                        {cards.length === 0 ? <div class="col-empty">空</div> : null}
                     </section>
                 );
             })}
