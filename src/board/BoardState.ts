@@ -9,6 +9,7 @@ import type {
 import { JiraService, type JiraIssue, type JiraSprint } from '../services/JiraService';
 import { BoardPanel } from './BoardPanel';
 import { ConfigError, describeError } from './errors';
+import { revisionOf } from './fingerprint';
 import { readConfig } from './config';
 
 const ISSUE_FIELDS = [
@@ -42,6 +43,8 @@ export class BoardState {
     private lastPublishedRevision = '';
     private inFlight = false;
     private disposed = false;
+    private timer: ReturnType<typeof setTimeout> | undefined;
+    private visible = false;
     /** epic key → 标题，Epic chip 显示用；很少变，跨轮次缓存 */
     private readonly epicLabels = new Map<string, string>();
 
@@ -81,8 +84,43 @@ export class BoardState {
         }
     }
 
+    /**
+     * tab 在后台就停表，回到前台立刻刷一次再重新排下一轮。
+     * 用 setTimeout 递归而不是 setInterval：天然不会出现两轮重叠。
+     */
+    public setVisible(visible: boolean): void {
+        if (this.visible === visible) {
+            return;
+        }
+        this.visible = visible;
+        if (!visible) {
+            this.clearTimer();
+            return;
+        }
+        void this.refresh(true).finally(() => this.scheduleNext());
+    }
+
+    private scheduleNext(): void {
+        this.clearTimer();
+        if (!this.visible || this.disposed) {
+            return;
+        }
+        const intervalMs = readConfig().pollIntervalSec * 1000;
+        this.timer = setTimeout(() => {
+            void this.refresh(false).finally(() => this.scheduleNext());
+        }, intervalMs);
+    }
+
+    private clearTimer(): void {
+        if (this.timer !== undefined) {
+            clearTimeout(this.timer);
+            this.timer = undefined;
+        }
+    }
+
     public dispose(): void {
         this.disposed = true;
+        this.clearTimer();
     }
 
     private async load(): Promise<void> {
@@ -278,7 +316,7 @@ export class BoardState {
 
     private buildPayload(): BoardStatePayload {
         const config = readConfig();
-        const signature = JSON.stringify({
+        const signature = revisionOf({
             scope: this.scope,
             columns: this.columns,
             cards: this.cards,
@@ -290,7 +328,7 @@ export class BoardState {
         });
 
         return {
-            revision: fingerprint(signature),
+            revision: signature,
             columns: this.columns,
             cards: this.cards,
             scope: this.scope,
@@ -308,13 +346,4 @@ export class BoardState {
         const mapped = new Set(this.columns.flatMap((column) => column.statusIds));
         return this.cards.filter((card) => !mapped.has(card.statusId)).length;
     }
-}
-
-/** 数据指纹：WebView 用它判断要不要重绘 */
-export function fingerprint(input: string): string {
-    let hash = 5381;
-    for (let index = 0; index < input.length; index += 1) {
-        hash = ((hash << 5) + hash + input.charCodeAt(index)) | 0;
-    }
-    return (hash >>> 0).toString(36);
 }

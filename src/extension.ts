@@ -76,7 +76,7 @@ function registerBoard(context: vscode.ExtensionContext): void {
 
     const openBoard = () => {
         BoardPanel.createOrShow(context.extensionUri, {
-            onReady: () => boardState?.refresh(true),
+            onReady: () => boardState?.setVisible(true),
             onRefresh: (force) => boardState?.refresh(force),
             onScopeChange: (scope) => {
                 boardState?.setScope(scope);
@@ -85,10 +85,9 @@ function registerBoard(context: vscode.ExtensionContext): void {
             onOpenJira: (key) => openJiraIssue(key),
             onOpenExternal: (url) => openExternal(url),
             onVisibilityChanged: (visible) => {
-                if (visible) {
-                    void boardState?.refresh(false);
-                }
+                boardState?.setVisible(visible);
             },
+            onDisposed: () => boardState?.setVisible(false),
         });
     };
 
