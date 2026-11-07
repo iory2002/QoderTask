@@ -55,6 +55,14 @@ export class JiraService {
     }
 
     /**
+     * issue 的浏览器地址
+     */
+    public browseUrl(key: string): string {
+        const baseUrl = (this.config?.baseUrl ?? '').replace(/\/+$/, '');
+        return `${baseUrl}/browse/${encodeURIComponent(key)}`;
+    }
+
+    /**
      * 发起 Jira REST API 请求
      */
     private request<T>(urlPath: string): Promise<T> {

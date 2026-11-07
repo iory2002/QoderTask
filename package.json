@@ -8,7 +8,9 @@
   "engines": {
     "vscode": "^1.74.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
@@ -18,6 +20,11 @@
           "id": "todo-panel",
           "title": "Todo Panel",
           "icon": "$(checklist)"
+        },
+        {
+          "id": "jira-board",
+          "title": "Jira Board",
+          "icon": "$(project)"
         }
       ]
     },
@@ -28,9 +35,21 @@
           "id": "todoPanel.webview",
           "name": "My Todos"
         }
+      ],
+      "jira-board": [
+        {
+          "type": "webview",
+          "id": "jiraBoard.entry",
+          "name": "Jira Board"
+        }
       ]
     },
     "commands": [
+      {
+        "command": "todoPanel.openBoard",
+        "title": "Jira Board: Open Board",
+        "icon": "$(project)"
+      },
       {
         "command": "todoPanel.addTodo",
         "title": "Add Todo",
@@ -65,20 +84,94 @@
           "group": "navigation"
         }
       ]
+    },
+    "configuration": {
+      "title": "Jira Board",
+      "properties": {
+        "todoPanel.boardId": {
+          "type": "number",
+          "default": 23,
+          "description": "Jira board id。列定义来自该 board 的 configuration。"
+        },
+        "todoPanel.projects": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["MAGR3", "NEX", "NEX2", "IB"],
+          "description": "看板范围的项目白名单。不在白名单里的项目不会出现在看板上。"
+        },
+        "todoPanel.onlyMineByDefault": {
+          "type": "boolean",
+          "default": true,
+          "description": "打开看板时默认只看指派给自己的 issue。"
+        },
+        "todoPanel.pollIntervalSec": {
+          "type": "number",
+          "default": 45,
+          "minimum": 30,
+          "maximum": 60,
+          "description": "自动刷新间隔（秒），建议 30～60。"
+        },
+        "todoPanel.repos": {
+          "type": "array",
+          "description": "Jira 项目到 GitLab 仓库 / Jenkins job 的映射。没有条目的项目不做阶段追踪，卡片不出现阶段徽章。",
+          "default": [
+            {
+              "jiraProjects": ["NEX2"],
+              "gitlabProject": "ultrasoundgeneralimaging/gipc-app",
+              "targetBranch": "nexus/dev/7.10.x",
+              "jenkinsJobPath": "UltrasoundGeneralImaging/ultrasoundgeneralimaging%2Fgipc-app/nexus%2Fdev%2F7.10.x"
+            },
+            {
+              "jiraProjects": ["NEX"],
+              "gitlabProject": "ultrasoundgeneralimaging/gipc-app",
+              "targetBranch": "nexus/dev/5.10.x",
+              "jenkinsJobPath": "UltrasoundGeneralImaging/ultrasoundgeneralimaging%2Fgipc-app/nexus%2Fdev%2F5.10.x"
+            }
+          ],
+          "items": {
+            "type": "object",
+            "required": ["jiraProjects", "gitlabProject", "targetBranch"],
+            "properties": {
+              "jiraProjects": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "该条目服务的 Jira 项目 key。"
+              },
+              "gitlabProject": {
+                "type": "string",
+                "description": "GitLab 项目路径或数值 id。"
+              },
+              "targetBranch": {
+                "type": "string",
+                "description": "只有合入这个分支的 MR 才算交付。"
+              },
+              "jenkinsJobPath": {
+                "type": ["string", "null"],
+                "default": null,
+                "description": "Jenkins job 路径（用 / 分段，每段已 URL 编码）。为 null 时阶段只到「已合入」。"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && tsc -p tsconfig.webview.json && node build-webview.js",
+    "build:webview": "node build-webview.js",
+    "watch:webview": "node build-webview.js --watch",
     "watch": "tsc -watch -p ./",
     "pretest": "tsc -p tsconfig.test.json",
     "test": "node --test \".test-out/test/**/*.test.js\"",
-    "package": "vsce package"
+    "package": "npm run compile && node scripts/check-webview-build.js && vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.74.0",
     "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
     "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.25.12",
+    "preact": "^10.29.8",
     "typescript": "^5.0.0"
   }
 }
