@@ -1,15 +1,28 @@
 import type {
+    BoardCard,
     BoardColumn,
     BoardNotice,
     BoardScope,
     BoardStatePayload,
-    BoardCard,
     Freshness,
 } from '../models/Board';
-import { JiraService, type JiraSprint } from '../services/JiraService';
+import { JiraService, type JiraIssue, type JiraSprint } from '../services/JiraService';
 import { BoardPanel } from './BoardPanel';
 import { ConfigError, describeError } from './errors';
 import { readConfig } from './config';
+
+const ISSUE_FIELDS = [
+    'summary',
+    'status',
+    'issuetype',
+    'priority',
+    'updated',
+    'customfield_10000',
+    'customfield_10014',
+    'parent',
+    'comment',
+    'assignee',
+];
 
 /**
  * 看板的内存态与轮询调度。
@@ -22,12 +35,15 @@ export class BoardState {
     private columns: BoardColumn[] = [];
     private cards: BoardCard[] = [];
     private sprint: JiraSprint | null = null;
+    private rankField = 'customfield_10005';
     private freshness: Freshness = { lastSuccessAt: null, stale: false, error: null, loading: false };
     private notices: BoardNotice[] = [];
     private pendingKeys: string[] = [];
     private lastPublishedRevision = '';
     private inFlight = false;
     private disposed = false;
+    /** epic key → 标题，Epic chip 显示用；很少变，跨轮次缓存 */
+    private readonly epicLabels = new Map<string, string>();
 
     private readonly jira = new JiraService();
 
@@ -70,7 +86,6 @@ export class BoardState {
     }
 
     private async load(): Promise<void> {
-        const config = readConfig();
         try {
             if (!this.jira.isConfigured()) {
                 throw new ConfigError(
@@ -79,22 +94,21 @@ export class BoardState {
                 );
             }
 
+            const config = readConfig();
             const boardConfig = await this.jira.getBoardConfig(config.boardId);
             this.columns = boardConfig.columns;
+            this.rankField = boardConfig.rankField;
             this.sprint = await this.jira.getActiveSprint(config.boardId);
-            this.cards = [];
+
+            this.cards = this.sprint ? await this.fetchCards(this.sprint) : [];
+
             console.log(
                 `[jira-board] board ${config.boardId} 列定义：` +
                     this.columns.map((column) => `${column.name}(${column.statusIds.join(',')})`).join(' / ') +
-                    `，rank=${boardConfig.rankField}，sprint=${this.sprint?.name ?? '无'}`
+                    `，rank=${this.rankField}，sprint=${this.sprint?.name ?? '无'}，卡片=${this.cards.length}`
             );
 
-            this.freshness = {
-                lastSuccessAt: Date.now(),
-                stale: false,
-                error: null,
-                loading: true,
-            };
+            this.freshness = { lastSuccessAt: Date.now(), stale: false, error: null, loading: true };
             this.notices = this.buildNotices();
         } catch (error) {
             const described = describeError(error);
@@ -111,6 +125,117 @@ export class BoardState {
         }
     }
 
+    private async fetchCards(sprint: JiraSprint): Promise<BoardCard[]> {
+        const config = readConfig();
+        if (config.projects.length === 0) {
+            return [];
+        }
+
+        const jql = this.buildJql(sprint, config.projects);
+        const fields = [...ISSUE_FIELDS, this.rankField];
+        const result = await this.jira.search(jql, fields);
+        const epics = await this.resolveEpicLabels(result.issues);
+
+        const cards = result.issues
+            .filter((issue) => (issue.fields.issuetype?.name ?? '') !== 'Epic')
+            .map((issue) => this.toCard(issue, epics));
+
+        return cards.sort((left, right) => {
+            if (left.rank === right.rank) {
+                return left.key.localeCompare(right.key);
+            }
+            if (!left.rank) {
+                return 1;
+            }
+            if (!right.rank) {
+                return -1;
+            }
+            return left.rank < right.rank ? -1 : 1;
+        });
+    }
+
+    private buildJql(sprint: JiraSprint, projects: string[]): string {
+        const clauses = [
+            `sprint = ${sprint.id}`,
+            `project IN (${projects.join(', ')})`,
+            'issuetype != Epic',
+        ];
+        if (this.scope.onlyMine) {
+            clauses.push('assignee = currentUser()');
+        }
+        return `${clauses.join(' AND ')} ORDER BY Rank ASC`;
+    }
+
+    /** Epic Link 是自定义字段（本环境 10000，兜底 10014），值为 key 字符串 */
+    private epicKeyOf(issue: JiraIssue): string | null {
+        const raw = issue.fields.customfield_10000 ?? issue.fields.customfield_10014;
+        if (!raw) {
+            return null;
+        }
+        if (typeof raw === 'string') {
+            return raw;
+        }
+        if (typeof raw === 'object' && typeof raw.key === 'string') {
+            return raw.key;
+        }
+        return null;
+    }
+
+    /** 一次批量查回 epic 标题，缺失的退化为 key */
+    private async resolveEpicLabels(issues: JiraIssue[]): Promise<Map<string, string>> {
+        const keys = new Set<string>();
+        for (const issue of issues) {
+            const key = this.epicKeyOf(issue);
+            if (key && !this.epicLabels.has(key)) {
+                keys.add(key);
+            }
+        }
+        if (keys.size > 0) {
+            const list = [...keys].slice(0, 50);
+            try {
+                const result = await this.jira.search(`key IN (${list.join(', ')})`, ['summary'], list.length);
+                for (const epic of result.issues) {
+                    this.epicLabels.set(epic.key, epic.fields.summary ?? epic.key);
+                }
+            } catch (error) {
+                console.warn('[jira-board] epic 标题拉取失败，退回显示 key', error);
+            }
+        }
+        return this.epicLabels;
+    }
+
+    private toCard(issue: JiraIssue, epics: Map<string, string>): BoardCard {
+        const fields = issue.fields;
+        const statusId = String(fields.status?.id ?? '');
+        const column = this.columns.find((candidate) => candidate.statusIds.includes(statusId));
+        const epicKey = this.epicKeyOf(issue);
+        const issueType = fields.issuetype?.name ?? 'Task';
+        const project = issue.key.split('-')[0];
+
+        return {
+            key: issue.key,
+            project,
+            summary: fields.summary ?? '',
+            issueType,
+            priority: fields.priority?.name ?? null,
+            statusId,
+            columnName: column?.name ?? '',
+            epicKey,
+            epicLabel: epicKey ? epics.get(epicKey) ?? epicKey : null,
+            rank: String(fields[this.rankField] ?? ''),
+            assignee: fields.assignee?.displayName ?? null,
+            isSubtask: fields.issuetype?.subtask === true || issueType.toLowerCase() === 'sub-task',
+            parentKey: fields.parent?.key,
+            commentCount: fields.comment?.total ?? 0,
+            stage: null,
+            buildFailed: false,
+            buildChannel: 'none',
+            mrs: [],
+            evidence: [],
+            url: this.jira.browseUrl(issue.key),
+        };
+    }
+
     private buildNotices(): BoardNotice[] {
         const config = readConfig();
         const notices: BoardNotice[] = [];
@@ -120,6 +245,13 @@ export class BoardState {
                 level: 'warn',
                 message: '项目白名单为空，看板不会显示任何卡片',
                 hint: '设置 todoPanel.projects',
+            });
+        }
+        if (!this.sprint) {
+            notices.push({
+                level: 'warn',
+                message: '没有找到活跃 sprint，看板暂时为空',
+                hint: `检查 todoPanel.boardId（当前 ${config.boardId}）在 Jira 上是否有进行中的 sprint`,
             });
         }
         if (config.repos.length === 0) {
