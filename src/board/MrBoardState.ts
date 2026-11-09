@@ -1,3 +1,5 @@
+import * as crypto from 'crypto';
+
 import type { BoardNotice, Freshness } from '../models/Board';
 import type { MrBoardPayload, MrCard } from '../models/MrBoard';
 import { GitLabService, clearGitLabCaches, type GitLabApprovals, type GitLabMrRow, type GitLabUser } from '../services/GitLabService';
@@ -6,7 +8,7 @@ import { countMrBadges, type BadgeCounts } from '../services/BadgeCounter';
 import { epochOf } from '../services/time';
 import { readBadgeConfig, readConfig, readMrConfig } from './config';
 import { ConfigError, describeError } from './errors';
-import { FactStore, type ApprovalRow, type MrRow } from './FactStore';
+import { FactStore, FOLLOW_POLL_MS, FRESHNESS_MS, type ApprovalRow, type MrRow } from './FactStore';
 import { approvalsFromStore, mrCandidatesFromStore, restoredFreshness } from './Restore';
 import { revisionOf } from './fingerprint';
 import { MrBoardPanel } from './MrBoardPanel';
@@ -43,6 +45,13 @@ export class MrBoardState {
     private readonly store: FactStore | null;
     /** 库的病况（损坏重建 / 更高版本只读）：只在板内说一次 */
     private readonly storeNotice: BoardNotice | null;
+    private ephemeralNotice: BoardNotice | null = null;
+    /** 这一轮是否由用户手动触发（忽略新鲜度去抢位） */
+    private manualRequest = false;
+    private retryBudget = 0;
+    private readonly ownerId = crypto.randomUUID();
+    private followTimer: ReturnType<typeof setTimeout> | undefined;
+    private lastDataVersion: number | null = null;
 
     constructor(factsPath?: string) {
         const opened = factsPath ? FactStore.openWithStatus(factsPath) : null;
@@ -74,6 +83,7 @@ export class MrBoardState {
             clearGitLabCaches();
         }
         this.inFlight = true;
+        this.manualRequest = force;
         this.loading = true;
         if (this.freshness.lastSuccessAt === null) {
             this.publish(true);
@@ -121,6 +131,7 @@ export class MrBoardState {
             this.publish(true);
             this.updateBadge();
         }
+        this.scheduleFollow();
         // 启动不用 force：两个看板同时开跑，共享缓存能把重复请求合成一次
         void this.refresh(false).finally(() => this.scheduleNext());
     }
@@ -205,6 +216,8 @@ export class MrBoardState {
     public dispose(): void {
         this.disposed = true;
         this.clearTimer();
+        this.clearFollow();
+        this.store?.close();
     }
 
     private scheduleNext(): void {
@@ -226,8 +239,93 @@ export class MrBoardState {
         }
     }
 
+    /** 跟随者：每 3 秒读一次提交版本号（零查询），变了才重读并重绘 */
+    private scheduleFollow(): void {
+        this.clearFollow();
+        if (!this.started || this.disposed) {
+            return;
+        }
+        this.followTimer = setTimeout(() => {
+            this.pollStore();
+            this.scheduleFollow();
+        }, FOLLOW_POLL_MS);
+    }
+
+    private clearFollow(): void {
+        if (this.followTimer !== undefined) {
+            clearTimeout(this.followTimer);
+            this.followTimer = undefined;
+        }
+    }
+
+    private pollStore(): void {
+        if (!this.store) {
+            return;
+        }
+        const version = this.store.dataVersion();
+        if (version === null) {
+            return;
+        }
+        if (this.lastDataVersion === null) {
+            this.lastDataVersion = version;
+            return;
+        }
+        if (version === this.lastDataVersion) {
+            return;
+        }
+        this.lastDataVersion = version;
+        if (this.restoreFromStore()) {
+            this.publish(false);
+            this.updateBadge();
+        }
+    }
+
+    /** 抢不到占位：提示 + 3 秒后重试，最多 3 次 */
+    private noteBusy(): void {
+        this.ephemeralNotice = {
+            level: 'warn',
+            message: '另一个窗口正在刷新',
+            hint: '同一个事实库只让一个窗口去取数；3 秒后自动重试',
+        };
+        if (this.retryBudget >= 3) {
+            return;
+        }
+        this.retryBudget += 1;
+        setTimeout(() => {
+            if (!this.disposed) {
+                void this.refresh(true);
+            }
+        }, FOLLOW_POLL_MS);
+    }
+
+    /** 过期由「上次成功时间」决定，不由本地是否尝试过决定 */
+    private freshnessNow(): Freshness {
+        const success = this.freshness.lastSuccessAt;
+        const aged = success !== null && Date.now() - success > FRESHNESS_MS;
+        return { ...this.freshness, stale: this.freshness.error !== null || aged };
+    }
+
     private async load(): Promise<void> {
         this.loadNotices = [];
+        const config = readMrConfig();
+        const gateScope = config.repos[0]
+            ? `gitlab-user:${config.repos[0].gitlabProject}@${config.repos[0].targetBranch}`
+            : null;
+        const manual = this.manualRequest;
+        this.manualRequest = false;
+        const claim = this.store && gateScope ? this.store.claimScope(gateScope, manual, this.ownerId) : 'claimed';
+
+        if (claim === 'fresh' || claim === 'busy') {
+            if (claim === 'busy' && manual) {
+                this.noteBusy();
+            }
+            if (this.restoreFromStore()) {
+                this.notices = this.buildNotices();
+            }
+            return;
+        }
+        // 'unavailable' = 库不可写：退回单窗口直连，照常取数
+
         try {
             if (!this.gitlab.isConfigured()) {
                 throw new ConfigError(
@@ -367,6 +465,8 @@ export class MrBoardState {
             this.closedCount = result.closedCount;
             this.freshness = { lastSuccessAt: Date.now(), stale: false, error: null };
             this.notices = this.buildNotices();
+            this.retryBudget = 0;
+            this.ephemeralNotice = null;
 
             console.log(
                 `[mr-board] scope=${config.repos.map((repo) => `${repo.gitlabProject}@${repo.targetBranch}`).join(' / ')}` +
@@ -374,6 +474,9 @@ export class MrBoardState {
             );
         } catch (error) {
             const described = describeError(error);
+            if (this.store && gateScope) {
+                this.store.releaseScope(gateScope, described.message);
+            }
             this.freshness = {
                 ...this.freshness,
                 stale: this.freshness.lastSuccessAt !== null,
@@ -478,6 +581,9 @@ export class MrBoardState {
         if (this.storeNotice) {
             notices.push(this.storeNotice);
         }
+        if (this.ephemeralNotice) {
+            notices.push(this.ephemeralNotice);
+        }
         if (config.repos.length === 0) {
             notices.push({
                 level: 'warn',
@@ -509,16 +615,17 @@ export class MrBoardState {
 
     private buildPayload(): MrBoardPayload {
         const config = readMrConfig();
+        const freshness = this.freshnessNow();
         const revision = revisionOf({
             reviewQueue: this.reviewQueue,
             myMrs: this.myMrs,
             closedCount: this.closedCount,
             scope: config.repos,
             notices: this.notices,
-            stale: this.freshness.stale,
-            error: this.freshness.error,
+            stale: freshness.stale,
+            error: freshness.error,
             loading: this.loading,
-            syncedMinute: this.freshness.lastSuccessAt === null ? null : Math.floor(this.freshness.lastSuccessAt / 60000),
+            syncedMinute: freshness.lastSuccessAt === null ? null : Math.floor(freshness.lastSuccessAt / 60000),
         });
 
         return {
@@ -528,7 +635,7 @@ export class MrBoardState {
             myMrs: this.myMrs,
             closedCount: this.closedCount,
             scope: config.repos,
-            freshness: this.freshness,
+            freshness,
             notices: this.notices,
         };
     }

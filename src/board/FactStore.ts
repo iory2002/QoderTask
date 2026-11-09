@@ -15,7 +15,7 @@ import { DDL_V1, SCHEMA_VERSION } from './schema';
  */
 
 export interface SqliteStatement {
-    run(...params: unknown[]): unknown;
+    run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
     get(...params: unknown[]): Record<string, unknown> | undefined;
     all(...params: unknown[]): Array<Record<string, unknown>>;
 }
@@ -31,6 +31,9 @@ export interface SqliteModule {
 }
 
 export type StoreStatus = 'ok' | 'recovered' | 'readonly' | 'unavailable';
+
+/** 库不可用时的统一说法：功能照常，只是退回单窗口 */
+export const UNAVAILABLE_MESSAGE = '共享事实库不可用，已退回单窗口模式（多开窗口会各自取数）';
 
 export interface OpenResult {
     store: FactStore | null;
@@ -160,6 +163,21 @@ export interface FetchStateRow {
 /** 每个 job 只留最近 200 条构建：历史账本，不无限长 */
 export const BUILD_RETENTION = 200;
 
+/**
+ * 多窗口协调的三个数字（与 `.scratch/devops-board/research/02` 一致）：
+ * - 新鲜度 50s：比 60s 的轮询短一点，每拍都能看到「刚更新过」
+ * - 占位 45s：覆盖一次全量 fetch 的最坏耗时
+ * - 失败退避 15s：不锤同一台故障服务，也不让人等太久
+ */
+export const FRESHNESS_MS = 50_000;
+export const CLAIM_MS = 45_000;
+export const BACKOFF_MS = 15_000;
+/** 跟随者每 3 秒看一次提交版本号（零查询） */
+export const FOLLOW_POLL_MS = 3_000;
+
+/** claimed = 我去取；fresh = 别人刚取过；busy = 别人正在取；unavailable = 库不可写 */
+export type ClaimResult = 'claimed' | 'fresh' | 'busy' | 'unavailable';
+
 function nullableBool(value: boolean | null): number | null {
     return value === null ? null : value ? 1 : 0;
 }
@@ -202,7 +220,7 @@ export class FactStore {
      */
     public static openWithStatus(dbPath: string, module: SqliteModule | null = loadSqlite()): OpenResult {
         if (!module) {
-            return { store: null, status: 'unavailable', message: null };
+            return { store: null, status: 'unavailable', message: UNAVAILABLE_MESSAGE };
         }
         let db: SqliteDatabase | undefined;
         try {
@@ -274,7 +292,7 @@ export class FactStore {
             } catch (closeError) {
                 console.warn('[fact-store] 关闭数据库失败', closeError);
             }
-            return { store: null, status: 'unavailable', message: null };
+            return { store: null, status: 'unavailable', message: UNAVAILABLE_MESSAGE };
         }
     }
 
@@ -305,7 +323,7 @@ export class FactStore {
             }
         } catch (error) {
             console.warn('[fact-store] 无法给损坏的库改名', error);
-            return { store: null, status: 'unavailable', message: null };
+            return { store: null, status: 'unavailable', message: UNAVAILABLE_MESSAGE };
         }
 
         try {
@@ -325,7 +343,7 @@ export class FactStore {
             };
         } catch (error) {
             console.warn('[fact-store] 重建事实库失败', error);
-            return { store: null, status: 'unavailable', message: null };
+            return { store: null, status: 'unavailable', message: UNAVAILABLE_MESSAGE };
         }
     }
 
@@ -612,6 +630,72 @@ export class FactStore {
                     approvalsLeft: row.approvals_left === null ? null : Number(row.approvals_left),
                 }))
         );
+    }
+
+    /**
+     * 抢一轮取数。
+     *
+     * SQLite 没有行锁，所以「判断 + 抢占」必须是一条原子 UPDATE，靠 changes() 定胜负：
+     * 这是唯一不会两边同时抢到的写法。
+     * - 常规：过期且空闲才抢
+     * - 手动刷新：忽略新鲜度，但仍不踩别人正在取的那一脚
+     */
+    public claimScope(scope: string, manual: boolean, owner: string, now = Date.now()): ClaimResult {
+        if (this.readOnly) {
+            return 'unavailable';
+        }
+        try {
+            this.db
+                .prepare('INSERT INTO fetch_state(scope, attempting_until) VALUES (?, 0) ON CONFLICT(scope) DO NOTHING')
+                .run(scope);
+
+            const freshnessClause = manual ? '' : 'AND (last_success_at IS NULL OR last_success_at < ?)';
+            const sql =
+                `UPDATE fetch_state
+                    SET attempting_until = ?, last_attempt_at = ?, owner = ?
+                  WHERE scope = ? AND attempting_until < ? ${freshnessClause}`;
+            const params: unknown[] = [now + CLAIM_MS, now, owner, scope, now];
+            if (!manual) {
+                params.push(now - FRESHNESS_MS);
+            }
+
+            if (Number(this.db.prepare(sql).run(...params).changes) === 1) {
+                return 'claimed';
+            }
+
+            const row = this.db.prepare('SELECT attempting_until FROM fetch_state WHERE scope = ?').get(scope);
+            if (!row) {
+                return 'unavailable';
+            }
+            return Number(row.attempting_until) >= now ? 'busy' : 'fresh';
+        } catch (error) {
+            console.warn('[fact-store] 抢占取数失败，退回单窗口直连', error);
+            return 'unavailable';
+        }
+    }
+
+    /** 取数失败：退避 15s，last_success_at 不动（失败不得把旧数据标成新鲜） */
+    public releaseScope(scope: string, error: string | null, now = Date.now()): void {
+        if (this.readOnly) {
+            return;
+        }
+        try {
+            this.db
+                .prepare('UPDATE fetch_state SET attempting_until = ?, last_error = ? WHERE scope = ?')
+                .run(error ? now + BACKOFF_MS : 0, error, scope);
+        } catch (caught) {
+            console.warn('[fact-store] 释放取数占位失败', caught);
+        }
+    }
+
+    /** `PRAGMA data_version`：另一个连接提交后才会变，零查询 */
+    public dataVersion(): number | null {
+        try {
+            const value = Number(this.db.prepare('PRAGMA data_version').get()?.data_version ?? Number.NaN);
+            return Number.isFinite(value) ? value : null;
+        } catch {
+            return null;
+        }
     }
 
     public boardOf(boardId: number): BoardRow | null {

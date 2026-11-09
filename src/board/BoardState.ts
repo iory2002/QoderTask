@@ -1,3 +1,5 @@
+import * as crypto from 'crypto';
+
 import type {
     BoardCard,
     BoardColumn,
@@ -19,7 +21,7 @@ import { buildChecksApplyTo, resolveStage, type StageResult } from '../services/
 import { stalledAfterMerge } from '../services/StalledAfterMerge';
 import { epochOf } from '../services/time';
 import { BoardPanel } from './BoardPanel';
-import { FactStore, type ApprovalRow, type MrRow } from './FactStore';
+import { FactStore, FOLLOW_POLL_MS, FRESHNESS_MS, type ApprovalRow, type MrRow } from './FactStore';
 import { approvalsFromStore, cardFromIssue, gitLabMrsFromStore, restoredFreshness } from './Restore';
 import { ConfigError, describeError } from './errors';
 import { revisionOf } from './fingerprint';
@@ -90,6 +92,17 @@ export class BoardState {
     /** 当前凭据对应的用户，用于本地「只看我的」过滤；拉一次就缓存 */
     private viewer: { name: string; displayName: string } | null = null;
 
+    private ephemeralNotice: BoardNotice | null = null;
+    /** 这一轮是否由用户手动触发（忽略新鲜度去抢位） */
+    private manualRequest = false;
+    /** 手动刷新抢不到时的重试次数；不做请求队列 */
+    private retryBudget = 0;
+    /** 这个窗口的身份，只用于写 owner，不参与任何判定 */
+    private readonly ownerId = crypto.randomUUID();
+    /** 跟随者每 3 秒看一次提交版本号 */
+    private followTimer: ReturnType<typeof setTimeout> | undefined;
+    private lastDataVersion: number | null = null;
+
     constructor(factsPath?: string) {
         const opened = factsPath ? FactStore.openWithStatus(factsPath) : null;
         this.store = opened?.store ?? null;
@@ -132,6 +145,7 @@ export class BoardState {
             clearGitLabCaches();
         }
         this.inFlight = true;
+        this.manualRequest = force;
         this.loading = true;
         if (this.freshness.lastSuccessAt === null) {
             // 首次加载：先把「加载中」推过去，否则前端会先拿到一个 0 列 0 卡的空看板
@@ -176,6 +190,7 @@ export class BoardState {
             this.publish(true);
             this.updateBadge();
         }
+        this.scheduleFollow();
         // 启动不用 force：两个看板同时开跑，共享缓存能把重复请求合成一次
         void this.refresh(false).finally(() => this.scheduleNext());
     }
@@ -225,12 +240,98 @@ export class BoardState {
         }
     }
 
+    /** 跟随者：每 3 秒读一次提交版本号（零查询），变了才重读并重绘 */
+    private scheduleFollow(): void {
+        this.clearFollow();
+        if (!this.started || this.disposed) {
+            return;
+        }
+        this.followTimer = setTimeout(() => {
+            this.pollStore();
+            this.scheduleFollow();
+        }, FOLLOW_POLL_MS);
+    }
+
+    private clearFollow(): void {
+        if (this.followTimer !== undefined) {
+            clearTimeout(this.followTimer);
+            this.followTimer = undefined;
+        }
+    }
+
+    private pollStore(): void {
+        if (!this.store) {
+            return;
+        }
+        const version = this.store.dataVersion();
+        if (version === null) {
+            return;
+        }
+        if (this.lastDataVersion === null) {
+            this.lastDataVersion = version;
+            return;
+        }
+        if (version === this.lastDataVersion) {
+            return;
+        }
+        this.lastDataVersion = version;
+        if (this.restoreFromStore()) {
+            // 指纹没变就不会重绘
+            this.publish(false);
+            this.updateBadge();
+        }
+    }
+
+    /** 抢不到占位：提示 + 3 秒后重试，最多 3 次 */
+    private noteBusy(): void {
+        this.ephemeralNotice = {
+            level: 'warn',
+            message: '另一个窗口正在刷新',
+            hint: '同一个事实库只让一个窗口去取数；3 秒后自动重试',
+        };
+        if (this.retryBudget >= 3) {
+            return;
+        }
+        this.retryBudget += 1;
+        setTimeout(() => {
+            if (!this.disposed) {
+                void this.refresh(true);
+            }
+        }, FOLLOW_POLL_MS);
+    }
+
+    /** 过期由「上次成功时间」决定，不由本地是否尝试过决定 */
+    private freshnessNow(): Freshness {
+        const success = this.freshness.lastSuccessAt;
+        const aged = success !== null && Date.now() - success > FRESHNESS_MS;
+        return { ...this.freshness, stale: this.freshness.error !== null || aged };
+    }
+
     public dispose(): void {
         this.disposed = true;
         this.clearTimer();
+        this.clearFollow();
+        this.store?.close();
     }
 
     private async load(): Promise<void> {
+        const gateScope = `jira:${readConfig().boardId}`;
+        const manual = this.manualRequest;
+        this.manualRequest = false;
+        const claim = this.store ? this.store.claimScope(gateScope, manual, this.ownerId) : 'claimed';
+
+        if (claim === 'fresh' || claim === 'busy') {
+            // 另一个窗口刚取过 / 正在取：不发请求，直接读库
+            if (claim === 'busy' && manual) {
+                this.noteBusy();
+            }
+            if (this.restoreFromStore()) {
+                this.notices = this.buildNotices();
+            }
+            return;
+        }
+        // 'unavailable' = 库不可写：退回单窗口直连，照常取数
+
         try {
             if (!this.jira.isConfigured()) {
                 throw new ConfigError(
@@ -263,8 +364,11 @@ export class BoardState {
             this.freshness = { lastSuccessAt: Date.now(), stale: false, error: null };
             this.notices = this.buildNotices();
             this.persistJira(config);
+            this.retryBudget = 0;
+            this.ephemeralNotice = null;
         } catch (error) {
             const described = describeError(error);
+            this.store?.releaseScope(gateScope, described.message);
             this.freshness = {
                 ...this.freshness,
                 stale: this.freshness.lastSuccessAt !== null,
@@ -908,6 +1012,9 @@ export class BoardState {
         if (this.storeNotice) {
             notices.push(this.storeNotice);
         }
+        if (this.ephemeralNotice) {
+            notices.push(this.ephemeralNotice);
+        }
 
         if (config.projects.length === 0) {
             notices.push({
@@ -947,17 +1054,18 @@ export class BoardState {
 
     private buildPayload(): BoardStatePayload {
         const config = readConfig();
+        const freshness = this.freshnessNow();
         const signature = revisionOf({
             scope: this.scope,
             columns: this.columns,
             cards: this.cards,
             sprint: this.sprint?.id ?? null,
             notices: this.notices,
-            stale: this.freshness.stale,
-            error: this.freshness.error,
+            stale: freshness.stale,
+            error: freshness.error,
             loading: this.loading,
             // 同步时间按分钟入指纹：数据没变也会更新「同步于 hh:mm」，但不会每轮都重绘
-            syncedMinute: this.freshness.lastSuccessAt === null ? null : Math.floor(this.freshness.lastSuccessAt / 60000),
+            syncedMinute: freshness.lastSuccessAt === null ? null : Math.floor(freshness.lastSuccessAt / 60000),
         });
 
         return {
@@ -967,7 +1075,7 @@ export class BoardState {
             cards: this.cards,
             scope: this.scope,
             projectOptions: config.projects,
-            freshness: this.freshness,
+            freshness,
             notices: this.notices,
             unmappedCount: this.unmappedCount(),
             sprintName: this.sprint?.name ?? null,

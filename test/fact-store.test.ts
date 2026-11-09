@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { FactStore, loadSqlite } from '../src/board/FactStore';
+import { BACKOFF_MS, CLAIM_MS, FactStore, FRESHNESS_MS, loadSqlite } from '../src/board/FactStore';
 import type { BoardCard, BuildFact } from '../src/models/Board';
 
 const SCOPE = 'jira:board23';
@@ -267,6 +267,60 @@ test('a database from a newer version is opened read-only and never migrated dow
     assert.ok(result.store);
     assert.equal(result.store.schemaVersion(), 99, 'the version must not be downgraded');
     assert.equal(result.store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })])), false);
+
+    result.store.close();
+    rmSync(dir, { recursive: true, force: true });
+});
+
+test('a freshly synced scope cannot be claimed until the freshness window passes', () => {
+    withStore((store) => {
+        store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })]));
+        const now = Date.now();
+
+        assert.equal(store.claimScope(SCOPE, false, 'window-a', now), 'fresh');
+        assert.equal(store.claimScope(SCOPE, false, 'window-b', now + FRESHNESS_MS + 1), 'claimed');
+    });
+});
+
+test('a manual claim ignores freshness but never steps on a live claim', () => {
+    withStore((store) => {
+        store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })]));
+        const now = Date.now();
+
+        assert.equal(store.claimScope(SCOPE, true, 'window-a', now), 'claimed');
+        assert.equal(store.claimScope(SCOPE, true, 'window-b', now + 1), 'busy');
+        // 占位到期后别人可以接手
+        assert.equal(store.claimScope(SCOPE, true, 'window-b', now + CLAIM_MS + 1), 'claimed');
+    });
+});
+
+test('a failed fetch backs off for 15 seconds and never freshens the old data', () => {
+    withStore((store) => {
+        store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })]));
+        const now = Date.now();
+        const before = store.lastSuccessAt(SCOPE);
+
+        assert.equal(store.claimScope(SCOPE, true, 'window-a', now), 'claimed');
+        store.releaseScope(SCOPE, 'GitLab 502', now);
+
+        assert.equal(store.lastSuccessAt(SCOPE), before, 'a failure must not touch last_success_at');
+        assert.equal(store.claimScope(SCOPE, true, 'window-b', now + 1000), 'busy');
+        assert.equal(store.claimScope(SCOPE, true, 'window-b', now + BACKOFF_MS + 1), 'claimed');
+    });
+});
+
+test('a read-only library refuses to claim instead of pretending', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'facts-'));
+    const path = join(dir, 'facts.sqlite');
+    const sqlite = loadSqlite();
+    assert.ok(sqlite);
+    const raw = new sqlite.DatabaseSync(path);
+    raw.exec('PRAGMA user_version = 99');
+    raw.close();
+
+    const result = FactStore.openWithStatus(path);
+    assert.ok(result.store);
+    assert.equal(result.store.claimScope('jira:board23', true, 'window-a'), 'unavailable');
 
     result.store.close();
     rmSync(dir, { recursive: true, force: true });
