@@ -21,4 +21,5 @@
 - 跟随：3 秒一次的 `PRAGMA data_version`，变了才 `restoreFromStore()` → `publish(false)`（指纹没变就不重绘）。
 - 过期标记改为 `error !== null || now - lastSuccessAt > 50s`，本地尝试与否不再影响。
 - 测试：`test/fact-store.test.ts` 的抢占/占位/退避/只读四例。提交 `74afd65`。
+- **分支评审后的修正（`0195c9e`）**：① `stampSuccess` 必须把 `attempting_until` 归零，否则成功后的 45 秒内手动刷新会被自己的占位判成 busy（单窗口也会弹「另一个窗口正在刷新」）；② MR 板按 key 去重后再写切片（四腿查询会命中同一个 MR，主键冲突会让整片回滚）；③ 任何仓库过期即整板标过期（取最小时间）；④ `repos[0]` 失败时归还占位。
 

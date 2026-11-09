@@ -21,4 +21,5 @@
 - **库里多存了几个服务端事实**：`mr.reviewer_ids` / `web_url` / `approved` / `approvals_left`。没有这四列，离线恢复既分不出 MR 板的两列，也分不出一张 MR「已批/未批」——它们是服务端原话，不是派生结论。
 - MR 板的个人切片写 `gitlab-user:` scope（与分支全量分开），同样要存 `reviewer_ids` 才能恢复两列。
 - 测试：`test/restore.test.ts`（事实 → 阶段/两列）、`test/fact-store.test.ts`（mr + 审批快照）。提交 `983ff5e`。
+- **分支评审后的修正（`0195c9e`）**：① 恢复不再把「没取到」当「取到了」——`gitlabOk`/`buildsOk` 读 `fetch_state` 判定；② 审批没查过就是 `undefined`（unknown），不再当成未批准；③ `isMine` 改用 displayName 比较（否则首屏在「只看我的」下是空的）；④ MR→key 关联结果落 `mr_link`，恢复不再用空 description 重猜；⑤ 恢复补回 `pinned`。
 
