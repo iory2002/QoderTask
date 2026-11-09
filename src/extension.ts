@@ -166,16 +166,31 @@ async function startReview(payload: { iid: number; projectPath: string }): Promi
     const gitlab = new GitLabService();
     let diffPath: string | undefined;
     let failure: string | undefined;
+    let files: Array<{ path: string; additions: number; deletions: number }> | undefined;
+    let filesTruncated = false;
 
     try {
-        const diff = await gitlab.getMrDiffs(card.projectPath, card.iid);
-        diffPath = await writeDiffArtifact(card.iid, diff);
+        const bundle = await gitlab.getMrDiffs(card.projectPath, card.iid);
+        diffPath = await writeDiffArtifact(card.iid, bundle.text);
+        files = bundle.files;
+        filesTruncated = bundle.truncated;
     } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
         console.warn('[pc-board] 拉取 MR diff 失败，降级为只复制链接', error);
     }
 
-    const text = buildReviewRequest({ iid: card.iid, title: card.title, url: card.url }, diffPath);
+    const text = buildReviewRequest({
+        iid: card.iid,
+        title: card.title,
+        url: card.url,
+        diffPath,
+        files,
+        filesTruncated,
+        jiraKeys: card.jiraKeys,
+        approvalsKnown: card.approvalsKnown,
+        approvedBy: card.approvedBy.map((person) => person.name || person.username).filter(Boolean),
+        approvalsLeft: card.approvalsLeft,
+    });
     await vscode.env.clipboard.writeText(text);
 
     if (failure) {

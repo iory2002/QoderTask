@@ -1,6 +1,7 @@
 import * as https from 'https';
 import * as http from 'http';
 import type { MrPerson } from '../models/MrBoard';
+import { countChangedLines, type DiffFileFact } from './DiffFacts';
 import { fetchAllPages, PAGE_SIZE } from './paging';
 import { loadScrumBuddyConfig } from './ScrumBuddyConfig';
 import { createIntranetHttpsAgent, intranetTlsOptions } from './intranetTls';
@@ -83,6 +84,14 @@ export interface GitLabMrBatch {
 
 export interface GitLabMrRowBatch {
     rows: GitLabMrRow[];
+    truncated: boolean;
+}
+
+/** 一次 diff 取数的结果：统一 diff 文本 + 逐文件事实 */
+export interface MrDiffBundle {
+    text: string;
+    files: DiffFileFact[];
+    /** true = 文件数超过 3 页上限，事实只能当下界 */
     truncated: boolean;
 }
 
@@ -331,8 +340,10 @@ export class GitLabService {
      * GitLab 的 /diffs 只给 hunk，不带文件头，所以这里补 `--- a/` / `+++ b/`。
      * 最多 3 页：超大的 MR 被截断也好过把请求拖死。
      */
-    public async getMrDiffs(project: string, iid: number): Promise<string> {
+    public async getMrDiffs(project: string, iid: number): Promise<MrDiffBundle> {
         const parts: string[] = [];
+        const files: DiffFileFact[] = [];
+        let truncated = false;
 
         for (let page = 1; page <= 3; page += 1) {
             const query = `/api/v4/projects/${encodeURIComponent(project)}/merge_requests/${iid}/diffs` +
@@ -350,15 +361,22 @@ export class GitLabService {
             for (const entry of chunk) {
                 const oldPath = entry.old_path ?? entry.new_path ?? 'unknown';
                 const newPath = entry.new_path ?? oldPath;
-                parts.push(`--- a/${oldPath}\n+++ b/${newPath}\n${entry.diff ?? ''}`);
+                const diff = entry.diff ?? '';
+                parts.push(`--- a/${oldPath}\n+++ b/${newPath}\n${diff}`);
+                const counts = countChangedLines(diff);
+                files.push({ path: newPath, additions: counts.additions, deletions: counts.deletions });
             }
 
             if (chunk.length < 100) {
                 break;
             }
+            if (page === 3) {
+                // 满页且已到上限：文件数是不完整的，要点单必须写成「至少」
+                truncated = true;
+            }
         }
 
-        return parts.join('\n');
+        return { text: parts.join('\n'), files, truncated };
     }
 
     /**
