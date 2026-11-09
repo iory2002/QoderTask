@@ -14,7 +14,7 @@ import { GitLabService, clearGitLabCaches, type GitLabApprovals } from '../servi
 import { JenkinsService } from '../services/JenkinsService';
 import { associateMrs, toMrFacts } from '../services/MrAssociation';
 import { countJiraBadges, type BadgeCounts } from '../services/BadgeCounter';
-import { buildsWorthChecking, resolveContainment, type Containment } from '../services/BuildAncestry';
+import { buildsWorthChecking, newlyIntroducedCount, resolveContainment, type Containment } from '../services/BuildAncestry';
 import { buildChecksApplyTo, resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { stalledAfterMerge } from '../services/StalledAfterMerge';
 import { BoardPanel } from './BoardPanel';
@@ -32,6 +32,8 @@ interface RepoFacts {
     builds: BuildFact[];
     /** 祖先判定结果（key = iid@构建号）；缺失 = 未知 */
     containment: Map<string, Containment>;
+    /** 失败构建新引入的合入数（只用于详情描述） */
+    newlyIntroduced: number;
 }
 
 const ISSUE_FIELDS = [
@@ -437,6 +439,7 @@ export class BoardState {
                         byKey: new Map(),
                         builds: [],
                         containment: new Map(),
+                        newlyIntroduced: 0,
                     });
                     continue;
                 }
@@ -520,18 +523,21 @@ export class BoardState {
                             })
                         );
                     }
+                    const checkedBuilds = buildsWorthChecking(builds);
+                    const allMrs = [...facts.values()].flat();
+                    const containment = await resolveContainment({
+                        gitlab,
+                        project: group.repo.gitlabProject,
+                        mrs: allMrs,
+                        builds: checkedBuilds,
+                    });
                     factsByRepo.set(id, {
                         gitlabOk: true,
                         buildsOk,
                         byKey: facts,
                         builds,
-                        containment: await resolveContainment({
-                            gitlab,
-                            project: group.repo.gitlabProject,
-                            mrs: [...facts.values()].flat(),
-                            // 只问值得问的：最新成功构建（判「已构建」）与最新已完成构建（判高风险）
-                            builds: buildsWorthChecking(builds),
-                        }),
+                        containment,
+                        newlyIntroduced: newlyIntroducedCount(allMrs, checkedBuilds, containment),
                     });
                 } catch (error) {
                     const described = describeError(error);
@@ -542,6 +548,7 @@ export class BoardState {
                         byKey: new Map(),
                         builds,
                         containment: new Map(),
+                        newlyIntroduced: 0,
                     });
                     this.stageNotices.push({
                         level: 'error',
@@ -658,6 +665,7 @@ export class BoardState {
                 mrs,
                 builds: repoFacts?.builds ?? [],
                 containment: repoFacts?.containment,
+                newlyIntroduced: repoFacts?.newlyIntroduced ?? 0,
                 inherited,
             }),
             mrs,

@@ -23,6 +23,8 @@ export interface StageInput {
      * 缺失或 null = 未知，退回时间窗并标「推断」。
      */
     containment?: Map<string, Containment>;
+    /** 本次失败构建新引入的合入数（整个仓库口径），只用于详情描述 */
+    newlyIntroduced?: number;
     /** 子任务继承：父任务的解析结果 */
     inherited?: { stage: Stage; buildFailed: boolean; evidence: string[]; mr?: MrFact; build?: BuildFact };
 }
@@ -171,27 +173,59 @@ export function resolveStage(input: StageInput): StageResult {
 
         // 「已构建」= 最新一次**成功**构建的代码树包含本次合入。
         // FAILURE 与进行中的构建都不算；同一 SHA 被多次构建时取最新那次。
-        const latestSuccess = input.builds
-            .filter((build) => build.result === 'SUCCESS')
-            .sort((left, right) => right.timestamp - left.timestamp || right.number - left.number)[0];
+        const newestFirst = (left: BuildFact, right: BuildFact) =>
+            right.timestamp - left.timestamp || right.number - left.number;
+        const latestSuccess = input.builds.filter((build) => build.result === 'SUCCESS').sort(newestFirst)[0];
+        const lastFinished = input.builds.filter((build) => build.result !== null).sort(newestFirst)[0];
+        const latestFailure = lastFinished?.result === 'FAILURE' ? lastFinished : undefined;
+
+        const successVerdict = latestSuccess
+            ? input.containment?.get(containmentKey(cardMr, latestSuccess))
+            : undefined;
+        const failureVerdict = latestFailure
+            ? input.containment?.get(containmentKey(cardMr, latestFailure))
+            : undefined;
+
+        if (latestSuccess && successVerdict === true) {
+            evidence.push(
+                `最新成功构建 #${latestSuccess.number}（开始于 ${formatTime(latestSuccess.timestamp)}）包含本次合入`
+            );
+            return { stage: 'built', buildFailed: false, buildChannel: channel, cardMr, build: latestSuccess, evidence };
+        }
+
+        // 高风险：从未被成功构建包含过，而最新已完成构建又确实包含它并失败了。
+        // 两个「确实」缺一不可：拿不到祖先关系就不标，否则分支一红整板都是红字。
+        if (latestFailure && failureVerdict === true) {
+            evidence.push(
+                `最新已完成构建 #${latestFailure.number} FAILURE，开始于 ${formatTime(latestFailure.timestamp)}`
+            );
+            evidence.push(`本次构建新引入的合入共 ${input.newlyIntroduced ?? 0} 个；不断定是它引起的`);
+            return {
+                stage: 'merged',
+                buildFailed: true,
+                buildChannel: channel,
+                cardMr,
+                build: latestFailure,
+                evidence,
+            };
+        }
+
+        if (latestSuccess && successVerdict === false) {
+            evidence.push(
+                `最新成功构建 #${latestSuccess.number}（开始于 ${formatTime(
+                    latestSuccess.timestamp
+                )}）不含本次合入，等下一次成功构建`
+            );
+            return { stage: 'merged', buildFailed: false, buildChannel: channel, cardMr, build: latestSuccess, evidence };
+        }
 
         if (latestSuccess) {
-            const verdict = input.containment?.get(containmentKey(cardMr, latestSuccess));
-            const stamp = `#${latestSuccess.number}（开始于 ${formatTime(latestSuccess.timestamp)}）`;
-
-            if (verdict === true) {
-                evidence.push(`最新成功构建 ${stamp}包含本次合入`);
-                return { stage: 'built', buildFailed: false, buildChannel: channel, cardMr, build: latestSuccess, evidence };
-            }
-            if (verdict === false) {
-                evidence.push(`最新成功构建 ${stamp}不含本次合入，等下一次成功构建`);
-                return { stage: 'merged', buildFailed: false, buildChannel: channel, cardMr, build: latestSuccess, evidence };
-            }
-
             // 拿不到 SHA / 祖先判定失败：退回时间窗，并明说是推断
             const inferred = latestSuccess.timestamp > mergedAt;
             evidence.push(
-                `最新成功构建 ${stamp}${inferred ? '晚于' : '早于'}合入时间` +
+                `最新成功构建 #${latestSuccess.number}（开始于 ${formatTime(
+                    latestSuccess.timestamp
+                )}）${inferred ? '晚于' : '早于'}合入时间` +
                     `（推断：构建未提供 SHA 或祖先判定失败，只能按时间窗判断）`
             );
             return {
@@ -204,30 +238,23 @@ export function resolveStage(input: StageInput): StageResult {
             };
         }
 
-        const after = input.builds.filter((build) => build.timestamp > mergedAt);
-        const running = after.filter((build) => build.result === null);
+        const running = input.builds.filter((build) => build.result === null && build.timestamp > mergedAt);
         if (running.length > 0) {
             evidence.push(`构建 #${running[0].number} 仍在进行中，结果未知，不作为结论`);
         }
-
-        const finished = after
-            .filter((build) => build.result !== null)
-            .sort((left, right) => right.timestamp - left.timestamp);
-        const lastFinished = finished[0];
-        const failed = lastFinished !== undefined && lastFinished.result !== 'SUCCESS';
-        if (failed) {
+        if (lastFinished && lastFinished.timestamp > mergedAt) {
             evidence.push(
                 `构建 #${lastFinished.number} ${lastFinished.result}，开始于 ${formatTime(
                     lastFinished.timestamp
-                )}，未通过`
+                )}，无法证明包含本次合入，不作为这张卡的问题`
             );
-        } else if (lastFinished === undefined) {
+        } else {
             evidence.push('合入之后还没有任何已完成的构建');
         }
 
         return {
             stage: 'merged',
-            buildFailed: failed,
+            buildFailed: false,
             buildChannel: channel,
             cardMr,
             build: lastFinished,

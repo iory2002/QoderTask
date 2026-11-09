@@ -33,11 +33,13 @@ export function Card({
     showAvatar,
     onOpenJira,
     onOpenDetail,
+    onOpenBuild,
 }: {
     card: BoardCard;
     showAvatar: boolean;
     onOpenJira: (key: string) => void;
     onOpenDetail: (key: string) => void;
+    onOpenBuild: (url: string) => void;
 }) {
     return (
         <article
@@ -84,12 +86,12 @@ export function Card({
                 ) : null}
                 {card.commentCount > 0 ? <span class="cmt">💬 {card.commentCount}</span> : null}
             </div>
-            <StageBadges card={card} />
+            <StageBadges card={card} onOpenBuild={onOpenBuild} />
         </article>
     );
 }
 
-export function StageBadges({ card }: { card: BoardCard }) {
+export function StageBadges({ card, onOpenBuild }: { card: BoardCard; onOpenBuild: (url: string) => void }) {
     if (card.stage === null) {
         return null;
     }
@@ -106,10 +108,20 @@ export function StageBadges({ card }: { card: BoardCard }) {
             <span class={`stage ${label.cls}`} title={card.evidence.join('\n')}>
                 {text}
             </span>
-            {card.buildFailed ? (
-                <span class="stage s-fail" title="目标分支上最近一次构建失败">
-                    Build failed
-                </span>
+            {card.buildFailed && card.build ? (
+                // 只有「从未成功过 + 最新构建确实包含它」才走到这里；直达 Jenkins，不做复制
+                <a
+                    class="stage s-fail"
+                    href={card.build.url}
+                    title={`${card.build.url}\n${card.evidence.join('\n')}`}
+                    onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onOpenBuild(card.build!.url);
+                    }}
+                >
+                    构建失败 #{card.build.number}
+                </a>
             ) : null}
         </div>
     );

@@ -118,7 +118,7 @@ test('a running build is neither success nor failure', () => {
     assert.equal(result.buildFailed, false);
 });
 
-test('a failed build stays at merged but raises the failure flag', () => {
+test('a failed build without any ancestry proof stays merged and is not flagged', () => {
     const result = resolveStage({
         tracked: true,
         dataOk: true,
@@ -127,7 +127,7 @@ test('a failed build stays at merged but raises the failure flag', () => {
         builds: [build(246, '2026-11-07T04:07:00Z', 'FAILURE')],
     });
     assert.equal(result.stage, 'merged');
-    assert.equal(result.buildFailed, true);
+    assert.equal(result.buildFailed, false);
 });
 
 test('a later success clears an earlier failure', () => {
@@ -368,4 +368,80 @@ test('without a SHA the time window decides and the evidence says it is inferred
     assert.equal(result.stage, 'built');
     assert.match(result.evidence.join('\n'), /推断/);
 });
+
+test('a card never built before is flagged when the failing build provably contains its merge', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const failure = buildWithSha(246, '2026-11-07T04:07:00Z', 'FAILURE', 'ffff6666');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [failure],
+        containment: new Map([[containmentKey(merged, failure), true]]),
+        newlyIntroduced: 2,
+    });
+
+    assert.equal(result.stage, 'merged');
+    assert.equal(result.buildFailed, true);
+    assert.equal(result.build?.number, 246);
+    const evidence = result.evidence.join('\n');
+    assert.match(evidence, /新引入的合入共 2 个/);
+    assert.match(evidence, /不断定是它引起的/);
+});
+
+test('a card already contained in an earlier success is never flagged red', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'eeee5555');
+    const failure = buildWithSha(246, '2026-11-07T04:07:00Z', 'FAILURE', 'ffff6666');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success, failure],
+        containment: new Map([
+            [containmentKey(merged, success), true],
+            [containmentKey(merged, failure), true],
+        ]),
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.equal(result.buildFailed, false);
+});
+
+test('a card whose merge is not in the failing build is not flagged', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const failure = buildWithSha(246, '2026-11-07T04:07:00Z', 'FAILURE', 'ffff6666');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [failure],
+        containment: new Map([[containmentKey(merged, failure), false]]),
+    });
+
+    assert.equal(result.buildFailed, false);
+});
+
+test('an unknown ancestor relation never turns the board red', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const failure = build(246, '2026-11-07T04:07:00Z', 'FAILURE');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [failure],
+        containment: new Map([[containmentKey(merged, failure), null]]),
+    });
+
+    assert.equal(result.buildFailed, false);
+});
+
 

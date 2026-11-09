@@ -29,6 +29,7 @@ export function Board({ state, onRetry, onOpenDetail }: BoardProps) {
     }
 
     const openJira = (key: string) => post({ type: 'card:openJira', payload: { key } });
+    const openBuild = (url: string) => post({ type: 'board:openExternal', payload: { url } });
     // 纯视图过滤：数据是全量拉回来的，切「只看我的」/项目 chip 都不发请求
     const visible = state.cards.filter(
         (card) =>
@@ -57,6 +58,7 @@ export function Board({ state, onRetry, onOpenDetail }: BoardProps) {
                                 showAvatar={showAvatar}
                                 onOpenJira={openJira}
                                 onOpenDetail={onOpenDetail}
+                                onOpenBuild={openBuild}
                             />
                         ))}
                     </section>

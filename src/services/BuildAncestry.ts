@@ -34,6 +34,35 @@ export function buildsWorthChecking(builds: BuildFact[]): BuildFact[] {
     return [...new Map(picked.map((build) => [build.number, build])).values()];
 }
 
+/**
+ * 本次失败构建「新引入」的合入数：在失败构建的树里，但不在上一次成功构建的树里。
+ * 这个数字只描述范围，不断定因果。
+ */
+export function newlyIntroducedCount(
+    mrs: MrFact[],
+    builds: BuildFact[],
+    containment: Map<string, Containment>
+): number {
+    const latestSuccess = builds.filter((build) => build.result === 'SUCCESS').sort(newestFirst)[0];
+    const latestFailure = builds.filter((build) => build.result === 'FAILURE').sort(newestFirst)[0];
+    if (!latestFailure) {
+        return 0;
+    }
+
+    const counted = new Set<string>();
+    for (const mr of mrs) {
+        if (!mr.mergeCommitSha) {
+            continue;
+        }
+        const inFailure = containment.get(containmentKey(mr, latestFailure)) === true;
+        const inSuccess = latestSuccess ? containment.get(containmentKey(mr, latestSuccess)) === true : false;
+        if (inFailure && !inSuccess) {
+            counted.add(mr.mergeCommitSha);
+        }
+    }
+    return counted.size;
+}
+
 async function mergeBaseOf(
     gitlab: Pick<GitLabService, 'getMergeBase'>,
     project: string,
