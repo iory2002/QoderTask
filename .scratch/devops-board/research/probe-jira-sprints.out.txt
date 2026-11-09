@@ -1,0 +1,109 @@
+=== sprints∩╝êµ£ÇΦ┐æτÜäσ£¿σëì∩╝ë ===
+  #80 VERSANAR2 Sprint29(FW06~FW07) [closed] 2021-02-03 ~ 2021-02-17
+  #79 VERSANAR2 Sprint28(FW04~FW05) [closed] 2021-01-20 ~ 2021-02-03
+  #78 VERSANAR2 Sprint27(FW02~FW03) [closed] 2021-01-06 ~ 2021-01-20
+
+=== µ»ÅΦ╜«σìíτëç∩╝êkey / type / status / summary∩╝ë ===
+
+-- VERSANAR2 Sprint29(FW06~FW07)∩╝êclosed∩╝ëσà▒ 201 σ╝á --
+  VERSANAR1-5461 | Bug | Closed |  | πÇÉSupra AllπÇæUnable to input patient ID in Breas
+  VERSANAR2-1560 | Bug | Closed |  | 3SC PWµ¿íσ╝ÅΣ╕ïσìíΘí┐
+  VERSANAR2-1561 | Bug | Closed |  | L8µ╡ïΦ»òσìíΘí┐µë½µƒÑσ¢╛σâÅµ╢êσñ▒∩╝îΘçìµû░σ»╝σàÑµÄóσñ┤Σ╕ìσñìτÄ░
+  VERSANAR2-1910 | Task | Closed |  | πÇÉBase ImageπÇæSupra  Console R2
+  VERSANAR2-1911 | Sub-task | Closed |  | πÇÉBase ImageπÇæSupra R2 OS07
+  VERSANAR2-2096 | Bug | Resolved |  | πÇÉMagnaR203AgπÇæπÇÉMagnaR203AfπÇæπÇÉReliabilityπÇæ Databa
+  VERSANAR2-1730 | Bug | Resolved |  | πÇÉMagnaR203AeπÇæCan not activate comments when ch
+  VERSANAR2-1946 | Bug | Open |  | The button on top left coner of trackball disp
+  VERSANAR1-4545 | Task | In Progress |  | πÇÉΘÖ╢τºæτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-5951 | Task | In Progress |  | HAST µùÑσ╕╕τ╗┤µèñσÆîΘù«Θóÿσê¥µ¡Ñσêåµ₧É
+  VERSANAR1-4520 | Task | In Progress |  | πÇÉµ¥£µÿÄµÖ║τÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-834 | Task | Closed | VERSANAR2-74 | AI documentation
+  VERSANAR1-4703 | Task | In Progress |  | πÇÉSupportπÇæProgram & Cross Function Team support
+  VERSANAR1-6435 | Task | In Progress |  | πÇÉσöÉΘöªµ╕èτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4522 | Task | In Progress |  | πÇÉµ¢╣µ£êσìÄτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-1620 | Bug | Open |  | The windows bluescreen popup 2/5
+  VERSANAR2-1917 | Bug | Closed |  | πÇÉMagnaR204AaπÇæ[HAST] MAGNA R2 HAST σÉ»σè¿echoloader
+  VERSANAR1-4525 | Task | In Progress |  | πÇÉµ¥¿Θ£çσ«çτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-1771 | Bug | Closed |  | πÇÉNTPπÇæCannot enter measure under LOGIQView mode
+  VERSANAR2-2016 | Task | Closed |  | Workflow review
+  VERSANAR1-4527 | Task | In Progress |  | πÇÉΘÖêΦ╢àτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4702 | Task | In Progress |  | πÇÉCyber SecurityπÇæPSR related work
+  VERSANAR2-1535 | Bug | Closed |  | πÇÉSupra NTPπÇæThe "Save" button status display in
+  VERSANAR2-2025 | Task | Closed |  | Edelivery overall test - 4/30
+  VERSANAR2-2047 | Bug | Closed |  | πÇÉMagnaR203AcπÇæoptimize the code of battery diag
+
+-- VERSANAR2 Sprint28(FW04~FW05)∩╝êclosed∩╝ëσà▒ 241 σ╝á --
+  VERSANAR1-5461 | Bug | Closed |  | πÇÉSupra AllπÇæUnable to input patient ID in Breas
+  VERSANAR2-1560 | Bug | Closed |  | 3SC PWµ¿íσ╝ÅΣ╕ïσìíΘí┐
+  VERSANAR2-1561 | Bug | Closed |  | L8µ╡ïΦ»òσìíΘí┐µë½µƒÑσ¢╛σâÅµ╢êσñ▒∩╝îΘçìµû░σ»╝σàÑµÄóσñ┤Σ╕ìσñìτÄ░
+  VERSANAR2-1910 | Task | Closed |  | πÇÉBase ImageπÇæSupra  Console R2
+  VERSANAR2-1911 | Sub-task | Closed |  | πÇÉBase ImageπÇæSupra R2 OS07
+  VERSANAR2-2096 | Bug | Resolved |  | πÇÉMagnaR203AgπÇæπÇÉMagnaR203AfπÇæπÇÉReliabilityπÇæ Databa
+  VERSANAR2-1730 | Bug | Resolved |  | πÇÉMagnaR203AeπÇæCan not activate comments when ch
+  VERSANAR2-2012 | Task | Resolved |  | πÇÉMagnaR206AfπÇæπÇÉValidation FeedbackπÇæPW& Elasto m
+  VERSANAR2-1946 | Bug | Open |  | The button on top left coner of trackball disp
+  VERSANAR1-4545 | Task | In Progress |  | πÇÉΘÖ╢τºæτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-5951 | Task | In Progress |  | HAST µùÑσ╕╕τ╗┤µèñσÆîΘù«Θóÿσê¥µ¡Ñσêåµ₧É
+  VERSANAR1-4520 | Task | In Progress |  | πÇÉµ¥£µÿÄµÖ║τÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-834 | Task | Closed | VERSANAR2-74 | AI documentation
+  VERSANAR1-4703 | Task | In Progress |  | πÇÉSupportπÇæProgram & Cross Function Team support
+  VERSANAR1-6435 | Task | In Progress |  | πÇÉσöÉΘöªµ╕èτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4522 | Task | In Progress |  | πÇÉµ¢╣µ£êσìÄτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4525 | Task | In Progress |  | πÇÉµ¥¿Θ£çσ«çτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-1771 | Bug | Closed |  | πÇÉNTPπÇæCannot enter measure under LOGIQView mode
+  VERSANAR2-2016 | Task | Closed |  | Workflow review
+  VERSANAR2-1752 | Bug | Closed |  | πÇÉHigh LevelπÇæThe VsEcho function not ready.
+  VERSANAR1-4527 | Task | In Progress |  | πÇÉΘÖêΦ╢àτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4702 | Task | In Progress |  | πÇÉCyber SecurityπÇæPSR related work
+  VERSANAR2-2025 | Task | Closed |  | Edelivery overall test - 4/30
+  VERSANAR2-2047 | Bug | Closed |  | πÇÉMagnaR203AcπÇæoptimize the code of battery diag
+  VERSANAR2-2024 | Bug | Closed |  | πÇÉMagnaR203AaπÇæthe battery icon is red when batt
+
+-- VERSANAR2 Sprint27(FW02~FW03)∩╝êclosed∩╝ëσà▒ 133 σ╝á --
+  VERSANAR1-5461 | Bug | Closed |  | πÇÉSupra AllπÇæUnable to input patient ID in Breas
+  VERSANAR1-4545 | Task | In Progress |  | πÇÉΘÖ╢τºæτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-5951 | Task | In Progress |  | HAST µùÑσ╕╕τ╗┤µèñσÆîΘù«Θóÿσê¥µ¡Ñσêåµ₧É
+  VERSANAR1-4520 | Task | In Progress |  | πÇÉµ¥£µÿÄµÖ║τÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-834 | Task | Closed | VERSANAR2-74 | AI documentation
+  VERSANAR1-4703 | Task | In Progress |  | πÇÉSupportπÇæProgram & Cross Function Team support
+  VERSANAR1-6435 | Task | In Progress |  | πÇÉσöÉΘöªµ╕èτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4522 | Task | In Progress |  | πÇÉµ¢╣µ£êσìÄτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4525 | Task | In Progress |  | πÇÉµ¥¿Θ£çσ«çτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-1752 | Bug | Closed |  | πÇÉHigh LevelπÇæThe VsEcho function not ready.
+  VERSANAR1-4527 | Task | In Progress |  | πÇÉΘÖêΦ╢àτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4702 | Task | In Progress |  | πÇÉCyber SecurityπÇæPSR related work
+  VERSANAR2-1769 | Task | Closed |  | mE Support
+  VERSANAR2-1913 | Task | Closed |  | support 510K
+  VERSANAR2-1708 | Task | Closed |  | merge code
+  VERSANAR2-1609 | Task | Closed |  | πÇÉCyber SecurityπÇæDICOM TLS certificates and han
+  VERSANAR2-1984 | Task | Closed |  | πÇÉMagnaR203AeπÇæsupport IQ remove MSE_Left_WuKong
+  VERSANAR2-1991 | Bug | Closed |  | πÇÉscriptπÇæΦäÜµ£¼Φ┐ÉΦíîsimple workflowΣ╕ïσê¢σ╗║τùàΣ║║σüÜThyroidµ╡ïΘçÅ, pa
+  VERSANAR1-4707 | Task | In Progress |  | πÇÉσêÿΣ╕╜τ║óτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-4570 | Task | Closed |  | πÇÉµ¥¿σ¢╜σïçτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR1-7554 | Bug | In Progress |  | The MagicView was still in My Preset section a
+  VERSANAR2-1112 | Task | Closed |  | Supra R2 documents
+  VERSANAR1-4516 | Task | In Progress |  | πÇÉσæ¿µù¡τÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+  VERSANAR2-1848 | Task | Resolved |  | πÇÉVLiveπÇæCrash issues and unexpected image fix
+  VERSANAR1-4528 | Task | In Progress |  | πÇÉσ╝áµÇíΘóæτÜäσà╢σ«âσ╖ÑΣ╜£πÇæ
+
+=== µ▒çµÇ╗ ===
+[
+  {
+    "id": 80,
+    "name": "VERSANAR2 Sprint29(FW06~FW07)",
+    "state": "closed",
+    "total": 201
+  },
+  {
+    "id": 79,
+    "name": "VERSANAR2 Sprint28(FW04~FW05)",
+    "state": "closed",
+    "total": 241
+  },
+  {
+    "id": 78,
+    "name": "VERSANAR2 Sprint27(FW02~FW03)",
+    "state": "closed",
+    "total": 133
+  }
+]

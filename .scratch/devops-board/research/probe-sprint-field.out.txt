@@ -1,0 +1,10 @@
+issue HTTP 200 bytes 14455
+σ¡ùµ«╡µÇ╗µò░ 87
+τûæΣ╝╝ sprint σ¡ùµ«╡: (µùá)
+Θö«σÉìσÉ½ sprint τÜäσ¡ùµ«╡: (µùá)
+
+board 23 Φ┐çµ╗ñσÖ¿: (µùá)
+σêù: To Do[[object Object]|[object Object]] / In Progress[[object Object]|[object Object]] / In Code Review[[object Object]] / In Test[[object Object]] / Done[[object Object]|[object Object]|[object Object]|[object Object]|[object Object]]
+rank σ¡ùµ«╡: {"rankCustomFieldId":10005}
+board 23 sprint[active]: #521 Sprint (11.18)
+board 23 sprint[future]: (τ⌐║)

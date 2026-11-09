@@ -33,33 +33,18 @@ export function Card({
     showAvatar,
     onOpenJira,
     onOpenDetail,
-    onDragStart,
-    onDragEnd,
-    pending,
 }: {
     card: BoardCard;
     showAvatar: boolean;
     onOpenJira: (key: string) => void;
     onOpenDetail: (key: string) => void;
-    onDragStart: () => void;
-    onDragEnd: () => void;
-    pending: boolean;
 }) {
     return (
         <article
-            class={pending ? 'card pending' : 'card'}
+            class="card"
             data-key={card.key}
-            title={card.summary}
-            draggable={!pending}
+            title={`${card.summary}\n\n单击卡片看交付详情；改状态请到 Jira`}
             onClick={() => onOpenDetail(card.key)}
-            onDragStart={(event) => {
-                event.dataTransfer?.setData('text/plain', card.key);
-                if (event.dataTransfer) {
-                    event.dataTransfer.effectAllowed = 'move';
-                }
-                onDragStart();
-            }}
-            onDragEnd={onDragEnd}
         >
             <div class="row1">
                 <span class={`type ${typeClass(card.issueType)}`} title={card.issueType}>
@@ -106,6 +91,10 @@ export function Card({
 
 export function StageBadges({ card }: { card: BoardCard }) {
     if (card.stage === null) {
+        return null;
+    }
+    // Task / Sub-task 不产出 MR 是常态：没有 MR 时不报「未提交」，否则整列都是噪声
+    if (card.stage === 'none' && card.codeWork === false) {
         return null;
     }
     const label = STAGE_LABELS[card.stage] ?? STAGE_LABELS.unknown;

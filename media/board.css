@@ -32,14 +32,16 @@ body {
   padding: 8px 14px; background: var(--surface); border-bottom: 1px solid var(--line);
 }
 .brand { font-weight: 600; margin-right: 4px; }
-.brand small { font-weight: 400; color: var(--muted); margin-left: 6px; }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip-btn {
-  border: 1px solid var(--line); background: var(--surface); color: inherit;
-  border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer;
+/* sprint 名：深色主题用亮色突出；浅色主题自动换成深色，否则会和背景融掉 */
+.sprint-name {
+  font-weight: 600; margin-left: 8px; color: #FAFBFD;
 }
-.chip-btn[aria-pressed="false"] { color: var(--muted); border-style: dashed; }
-.chip-btn[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+body.vscode-light .sprint-name,
+body.vscode-high-contrast-light .sprint-name {
+  color: #16202b;
+}
+/* 项目范围：只读标签，交互在设置里 */
+.project-label { font-size: 12px; color: var(--muted); }
 .spacer { flex: 1 1 auto; }
 .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
 .stamp { font-size: 12px; color: var(--muted); }
@@ -51,6 +53,9 @@ body {
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: #1c7ed6; border-color: #1c7ed6; color: #fff; }
 .btn.danger { background: transparent; border-color: #ef4444; color: #ef4444; }
+/* GitLab 品牌橙：深色文字保证对比度（白字在 #FC6D26 上只有 ~2.9:1） */
+.btn.gitlab { background: #fc6d26; border-color: #e24329; color: #2b1200; font-weight: 600; }
+.btn.gitlab:hover { background: #f4601f; border-color: #cf3b23; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- 横幅 ---------- */
@@ -78,9 +83,6 @@ body {
   border: 1px solid transparent;
 }
 .col.done .card { opacity: .72; }
-.col.dragover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
-.col.reject { border-color: #ef4444; border-style: dashed; }
-.col.locked { opacity: .55; }
 .col h2 {
   margin: 0; font-size: 12px; font-weight: 600; color: var(--muted);
   display: flex; justify-content: space-between; padding: 2px 4px 6px;
@@ -96,12 +98,7 @@ body {
   background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
   padding: 8px 10px; cursor: pointer; box-shadow: 0 1px 1px rgba(0, 0, 0, .03);
 }
-.card:active { cursor: grabbing; }
-.card.dragging { opacity: .45; }
-.card.pending { opacity: .6; }
-.card.pending::after { content: "提交中…"; font-size: 11px; color: var(--muted); }
-.card.frozen { pointer-events: none; }
-.card.failed { border-color: #ef4444; }
+.card:active { cursor: pointer; }
 .row1 { display: flex; align-items: center; gap: 6px; }
 .type {
   width: 14px; height: 14px; border-radius: 3px; flex: none;
@@ -203,11 +200,28 @@ dialog::backdrop { background: rgba(20, 24, 32, .35); }
 .evidence { margin: 0; padding-left: 18px; font-size: 12px; }
 .evidence li { margin-bottom: 3px; }
 
-/* ---------- toast ---------- */
-.toast {
-  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60;
-  background: var(--vscode-notifications-background, #1f2328); color: #fff;
-  padding: 8px 14px; border-radius: 6px; font-size: 12px; max-width: 70vw;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, .25);
+/* ---------- 首屏骨架 ---------- */
+.loading { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.loading-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.loading .hint { font-size: 12px; }
+
+.spinner {
+  width: 14px; height: 14px; flex: none;
+  border: 2px solid var(--line); border-top-color: var(--accent, #1c7ed6);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
 }
-.toast.error { background: #b42318; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-board { display: flex; gap: 12px; align-items: flex-start; }
+.loading-col { flex: 1 1 0; min-width: 0; background: #eceef1; border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.loading-col-head { height: 12px; width: 40%; border-radius: 4px; background: #dcdfe4; }
+.loading-card {
+  height: 74px; border-radius: 6px; background: #fff; border: 1px solid var(--line);
+  animation: skeleton 1.4s ease-in-out infinite;
+}
+@keyframes skeleton { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2s; }
+  .loading-card { animation: none; opacity: .8; }
+}

@@ -9,10 +9,10 @@ export function TopBar({ model }: { model: BoardModel }) {
         <header class="topbar">
             <div class="brand">
                 Jira Board
-                <small>{state?.sprintName ?? '未连接'}</small>
+                <span class="sprint-name">{state?.sprintName ?? '未连接'}</span>
             </div>
 
-            {state ? <ProjectChips state={state} model={model} /> : null}
+            {state ? <ProjectScope state={state} /> : null}
 
             {state ? (
                 <label class="toggle">
@@ -42,38 +42,14 @@ export function TopBar({ model }: { model: BoardModel }) {
     );
 }
 
-function ProjectChips({ state, model }: { state: BoardStatePayload; model: BoardModel }) {
-    const selected = state.scope.projects;
-    const options = state.projectOptions;
-    const allOn = options.length > 0 && options.every((project) => selected.includes(project));
-
-    const toggle = (project: string) => {
-        const next = selected.includes(project)
-            ? selected.filter((item) => item !== project)
-            : [...selected, project];
-        model.setScope(next, state.scope.onlyMine);
-    };
-
+/** 看板范围来自设置，不在标题栏里提供交互：只把当前生效的项目显示出来 */
+function ProjectScope({ state }: { state: BoardStatePayload }) {
+    const projects = state.scope.projects;
+    const text = projects.length === 0 ? '未选项目' : projects.join(' · ');
     return (
-        <div class="chips">
-            <button
-                class="chip-btn"
-                aria-pressed={allOn}
-                onClick={() => model.setScope(allOn ? [] : [...options], state.scope.onlyMine)}
-            >
-                全部
-            </button>
-            {options.map((project) => (
-                <button
-                    key={project}
-                    class="chip-btn"
-                    aria-pressed={selected.includes(project)}
-                    onClick={() => toggle(project)}
-                >
-                    {project}
-                </button>
-            ))}
-        </div>
+        <span class="project-label" title="看板范围来自设置 pcBoard.projects">
+            {text}
+        </span>
     );
 }
 

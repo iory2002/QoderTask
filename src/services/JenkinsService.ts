@@ -4,6 +4,7 @@ import { URL } from 'url';
 
 import type { BuildFact } from '../models/Board';
 import { loadScrumBuddyConfig } from './ScrumBuddyConfig';
+import { createIntranetHttpsAgent, intranetTlsOptions } from './intranetTls';
 
 interface ScrumBuddyJenkinsConfig {
     baseUrl: string;
@@ -58,7 +59,7 @@ export function encodeJobPath(jobPath: string): string {
  */
 export class JenkinsService {
     private config: ScrumBuddyJenkinsConfig | null = null;
-    private readonly httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    private readonly httpsAgent = createIntranetHttpsAgent();
 
     constructor() {
         this.reloadConfig();
@@ -122,7 +123,7 @@ export class JenkinsService {
                 method: 'GET',
                 headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
                 timeout: 12000,
-                ...(isHttps ? { agent: this.httpsAgent } : {}),
+                ...(isHttps ? { agent: this.httpsAgent, ...intranetTlsOptions } : {}),
             };
 
             const req = transport.request(options, (res) => {

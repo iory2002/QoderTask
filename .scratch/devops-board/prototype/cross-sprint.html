@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>原型 · 跨 sprint 视图（3 个方案）</title>
+<!--
+  原型：跨 sprint 视图的三个结构方案，用 ?variant=A|B|C 切换，底部悬浮条翻页。
+  目的：只回答「形状对不对」，不回答「实现怎么写」。
+  数据：手写的示例数据（不是线上数据），`carried` 是脚本里写死的数字，不是算出来的。
+        真实数据源已探明：board 23 的活跃 sprint 是 #521「Sprint (11.18)」，列定义
+        To Do / In Progress / In Code Review / In Test / Done。Sprint 字段是
+        `customfield_10004`，值是**多值**（界面渲染为 "Sprint ZuiHuaYin(10.21), Sprint (11.4), Sprint (11.18)"），
+        所以「第几轮」≈ 条目数 − 1，一条 JQL 就能拿到（不再是“每轮拉一遍”的贵路线）。
+        待验证：该字段在 REST 里是字符串还是数组（探针撞上 Jira 403，见 research/probe-sprint-cf10004.js）。
+  用法：双击本文件即可，无构建、无依赖。
+-->
+<style>
+  :root {
+    --gap: 12px;
+    --bg: #f7f7f8;
+    --panel: #eceef1;
+    --line: #e3e3e6;
+    --fg: #1f2328;
+    --muted: #6b7280;
+    --accent: #3a5a7f;
+    --surface: #ffffff;
+    --none: #8c8f96;
+    --mr: #b26a00;
+    --approved: #7a5c00;
+    --merged: #1a5fa8;
+    --built: #1f7a3f;
+    --unknown: #9b2c2c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg);
+  }
+  .banner {
+    display: flex; gap: 10px; align-items: center;
+    padding: 6px 14px; background: #fff4d6; border-bottom: 1px solid #e8d18a;
+    font-size: 12px; color: #6b5200;
+  }
+  .banner b { letter-spacing: .4px; }
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    padding: 8px 14px; background: var(--surface); border-bottom: 1px solid var(--line);
+  }
+  .brand { font-weight: 600; }
+  .pill {
+    border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+    border-radius: 999px; padding: 2px 9px; font-size: 12px;
+  }
+  .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .muted { color: var(--muted); }
+  .grow { flex: 1; }
+  main { padding: 14px; padding-bottom: 96px; }
+
+  /* ---------- 共用 ---------- */
+  .badge { border-radius: 4px; padding: 1px 6px; font-size: 11px; white-space: nowrap; border: 1px solid; }
+  .b-none     { color: var(--none);     border-color: #d7d9dd; background: #f3f4f6; }
+  .b-mr       { color: var(--mr);       border-color: #f0d3a0; background: #fdf5e6; }
+  .b-approved { color: var(--approved); border-color: #ecdca0; background: #fdf9e6; }
+  .b-merged   { color: var(--merged);   border-color: #bcd6f0; background: #eaf3fc; }
+  .b-built    { color: var(--built);    border-color: #b7dfc7; background: #eaf7ef; }
+  .b-unknown  { color: var(--unknown);  border-color: #efc3c3; background: #fdeeee; }
+  .key { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; color: var(--accent); font-weight: 600; }
+  .chip {
+    display: inline-block; border: 1px solid var(--line); background: #fff;
+    border-radius: 999px; padding: 0 7px; font-size: 11px; color: var(--muted);
+  }
+  .carried { color: #9b2c2c; border-color: #efc3c3; background: #fdeeee; }
+
+  /* ---------- 方案 A：三列（按 sprint） ---------- */
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 220px; }
+  .col-head { padding: 9px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 8px; }
+  .col-head .name { font-weight: 600; }
+  .col-body { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .row {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 9px; display: grid; grid-template-columns: auto 1fr auto; gap: 6px 8px; align-items: center;
+  }
+  .row .sum { grid-column: 1 / -1; color: var(--fg); }
+  .row .tags { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+  .kpis { display: flex; gap: 18px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-bottom: var(--gap); }
+  .kpi .n { font-size: 18px; font-weight: 650; }
+  .kpi .l { font-size: 11px; color: var(--muted); }
+
+  /* ---------- 方案 B：单列分组流 ---------- */
+  .stream { max-width: 900px; }
+  .group-head {
+    position: sticky; top: 42px; z-index: 10;
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 10px; margin-bottom: 6px;
+    background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px;
+  }
+  .group-head .t { font-weight: 600; }
+  .group { margin-bottom: 18px; }
+  .srow {
+    display: grid; grid-template-columns: 88px 1fr auto; gap: 10px; align-items: center;
+    padding: 7px 10px; border-bottom: 1px dashed var(--line);
+  }
+  .srow:hover { background: #fbfcfd; }
+  .srow .sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- 方案 C：Epic × 阶段矩阵 ---------- */
+  .matrix { width: 100%; border-collapse: separate; border-spacing: 6px; }
+  .matrix th { font-size: 11px; color: var(--muted); font-weight: 600; text-align: left; padding: 0 4px; }
+  .matrix td { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; vertical-align: top; padding: 6px; min-width: 96px; height: 62px; }
+  .matrix td.rowhead { background: var(--panel); min-width: 190px; }
+  .matrix td.rowhead .e { font-weight: 600; }
+  .matrix td.total { background: #f4f6f8; text-align: center; font-weight: 650; }
+  .mini { display: block; font-family: Consolas, monospace; font-size: 11px; color: var(--accent); }
+  .mini + .mini { margin-top: 2px; }
+  .filterbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+
+  /* ---------- 悬浮切换条 ---------- */
+  #switcher {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px; z-index: 100;
+    background: #101418; color: #fff; border-radius: 999px; padding: 8px 10px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.28); font-size: 12px;
+  }
+  #switcher button {
+    all: unset; cursor: pointer; width: 26px; height: 26px; border-radius: 50%;
+    display: grid; place-items: center; background: #2a3138; color: #fff; font-size: 13px;
+  }
+  #switcher button:hover { background: #3a424b; }
+  #switcher .label { min-width: 210px; text-align: center; }
+  #switcher .hint { color: #97a0a8; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="banner"><b>PROTOTYPE</b><span>跨 sprint 视图 · 三个结构方案 · 示例数据（非线上） · ← → 或点底部箭头切换</span></div>
+<div class="topbar">
+  <span class="brand">Jira Board</span>
+  <span class="pill" id="v-name">方案 A</span>
+  <span class="muted">项目 NEX2 · 仓库 gipc-app @ nexus/dev/7.10.x</span>
+  <span class="grow"></span>
+  <span class="muted" id="sync">同步于 若干秒前</span>
+</div>
+<main id="app"></main>
+
+<div id="switcher">
+  <button id="prev" title="上一个方案">←</button>
+  <div>
+    <div class="label" id="sw-label">A（三段泳道）</div>
+    <div class="hint">?variant=A · ← → 切换</div>
+  </div>
+  <button id="next" title="下一个方案">→</button>
+</div>
+
+<script>
+// ---------------- 示例数据 ----------------
+const STAGE = {
+  none:     { cls: 'b-none',     text: '未提交' },
+  mr:       { cls: 'b-mr',       text: 'MR 待审' },
+  approved: { cls: 'b-approved', text: '已批准待合入' },
+  merged:   { cls: 'b-merged',   text: '已合入待构建' },
+  built:    { cls: 'b-built',    text: '已构建' },
+  unknown:  { cls: 'b-unknown',  text: '无法判定' }
+};
+
+const SPRINTS = [
+  { id: 'prev', label: '上一轮', name: 'Sprint 7.10.4', state: '已结束', range: '10-21 ~ 11-04' },
+  { id: 'cur',  label: '本轮',   name: 'Sprint 7.10.5', state: '进行中', range: '11-05 ~ 11-19' },
+  { id: 'next', label: '下一轮', name: 'Sprint 7.10.6', state: '未开始', range: '11-20 ~ 12-04' }
+];
+
+const EPICS = {
+  'NEX2-402': 'Auto Measure',
+  'NEX2-418': 'Patient Workflow',
+  'NEX2-455': 'Reporting',
+  'NEX2-470': 'Probe Connect'
+};
+
+const CARDS = [
+  // 上一轮
+  { key: 'NEX2-582', type: 'Story', summary: 'Auto measure：一键测量结果落报告', stage: 'merged',  epic: 'NEX2-402', sprint: 'prev', carried: 2 },
+  { key: 'NEX2-590', type: 'Bug',   summary: '测量框在 LOGIQView 下偏移',           stage: 'built',   epic: 'NEX2-402', sprint: 'prev', carried: 1 },
+  { key: 'NEX2-601', type: 'Story', summary: '患者列表按 MRN 搜索',                 stage: 'mr',      epic: 'NEX2-418', sprint: 'prev', carried: 2 },
+  { key: 'NEX2-604', type: 'Task',  summary: 'GIPC 启动时间埋点',                   stage: 'merged',  epic: null,        sprint: 'prev', carried: 0 },
+  { key: 'NEX2-608', type: 'Bug',   summary: '报告模板字体回退失败',                 stage: 'approved',epic: 'NEX2-455', sprint: 'prev', carried: 1 },
+  // 本轮
+  { key: 'NEX2-610', type: 'Story', summary: 'Auto measure：角度测量自动命名',       stage: 'unknown', epic: 'NEX2-402', sprint: 'cur',  carried: 0 },
+  { key: 'NEX2-612', type: 'Bug',   summary: '切换探头后增益不恢复',                 stage: 'mr',      epic: 'NEX2-470', sprint: 'cur',  carried: 0 },
+  { key: 'NEX2-615', type: 'Story', summary: '报告里插入测量截图',                   stage: 'approved',epic: 'NEX2-455', sprint: 'cur',  carried: 1 },
+  { key: 'NEX2-617', type: 'Task',  summary: '7.10.x 构建脚本迁移到新节点',          stage: 'merged',  epic: null,        sprint: 'cur',  carried: 0 },
+  { key: 'NEX2-620', type: 'Bug',   summary: '冻结后血流帧丢失',                     stage: 'built',   epic: 'NEX2-470', sprint: 'cur',  carried: 0 },
+  { key: 'NEX2-622', type: 'Story', summary: '患者信息二次确认弹窗',                 stage: 'none',    epic: 'NEX2-418', sprint: 'cur',  carried: 0 },
+  { key: 'NEX2-625', type: 'Sub-task', summary: 'Auto measure：补充单测',           stage: 'none',    epic: 'NEX2-402', sprint: 'cur',  carried: 0 },
+  { key: 'NEX2-628', type: 'Bug',   summary: '报告预览偶发空白页',                   stage: 'mr',      epic: 'NEX2-455', sprint: 'cur',  carried: 1 },
+  { key: 'NEX2-631', type: 'Story', summary: '测量结果导出 CSV',                     stage: 'unknown', epic: 'NEX2-402', sprint: 'cur',  carried: 0 },
+  { key: 'NEX2-634', type: 'Task',  summary: '评审记录归档脚本',                     stage: 'merged',  epic: null,        sprint: 'cur',  carried: 0 },
+  // 下一轮
+  { key: 'NEX2-640', type: 'Story', summary: '报告模板可视化编辑（一期）',            stage: 'none',    epic: 'NEX2-455', sprint: 'next', carried: 0 },
+  { key: 'NEX2-642', type: 'Bug',   summary: '患者切换时残留上一次测量',              stage: 'none',    epic: 'NEX2-418', sprint: 'next', carried: 0 },
+  { key: 'NEX2-645', type: 'Story', summary: '探头连接状态常驻提示',                  stage: 'none',    epic: 'NEX2-470', sprint: 'next', carried: 0 }
+];
+
+// ---------------- 小工具 ----------------
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+const stageBadge = (stage) => el('span', 'badge ' + STAGE[stage].cls, STAGE[stage].text);
+const epicChip = (epic) => epic ? el('span', 'chip', epic + ' ' + EPICS[epic]) : el('span', 'chip', '无 Epic');
+const sprintOf = (id) => SPRINTS.find((s) => s.id === id);
+const carriedChip = (n) => n > 0 ? el('span', 'chip carried', '遗留 ' + n + ' 轮') : el('span', 'chip', '本轮新增');
+const bySprint = (id) => CARDS.filter((c) => c.sprint === id);
+
+// ---------------- 方案 A：三段泳道 ----------------
+function VariantA() {
+  const wrap = document.createDocumentFragment();
+  const kpis = el('div', 'kpis');
+  const carried = CARDS.filter((c) => c.carried > 0).length;
+  const done = CARDS.filter((c) => c.stage === 'built' || c.stage === 'merged').length;
+  [['跨轮总数', CARDS.length, '三轮回看'],
+   ['遗留未完成', carried, '跨 ≥1 轮'],
+   ['已合入/已构建', done, '占 ' + Math.round(done / CARDS.length * 100) + '%'],
+   ['无法判定', CARDS.filter((c) => c.stage === 'unknown').length, '取数失败']
+  ].forEach(([l, n, sub]) => {
+    const k = el('div', 'kpi');
+    k.append(el('div', 'n', String(n)), el('div', 'l', l + ' · ' + sub));
+    kpis.append(k);
+  });
+  wrap.append(kpis);
+
+  const cols = el('div', 'cols');
+  SPRINTS.forEach((s) => {
+    const list = bySprint(s.id);
+    const col = el('div', 'col');
+    const head = el('div', 'col-head');
+    head.append(el('span', 'name', s.label + ' · ' + s.name), el('span', 'muted', s.state + ' ' + s.range), el('span', 'grow'), el('span', 'pill', list.length + ' 张'));
+    const body = el('div', 'col-body');
+    list.forEach((c) => {
+      const row = el('div', 'row');
+      row.append(el('span', 'key', c.key), el('span', 'sum', c.summary), stageBadge(c.stage));
+      const tags = el('div', 'tags');
+      tags.append(el('span', 'chip', c.type), epicChip(c.epic), carriedChip(c.carried));
+      row.append(tags);
+      body.append(row);
+    });
+    if (list.length === 0) body.append(el('div', 'muted', '这一轮没有卡片'));
+    col.append(head, body);
+    cols.append(col);
+  });
+  wrap.append(cols);
+  return wrap;
+}
+
+// ---------------- 方案 B：单列分组流 ----------------
+function VariantB() {
+  const wrap = document.createDocumentFragment();
+  const stream = el('div', 'stream');
+  const groups = [
+    { title: '拖住不动', hint: '跨 ≥2 轮，或 MR 已开超过 3 天', test: (c) => c.carried >= 2 || (c.stage === 'mr' && c.carried >= 1) },
+    { title: '在推进',   hint: '本轮有交付事实在动',            test: (c) => !(c.carried >= 2 || (c.stage === 'mr' && c.carried >= 1)) && c.stage !== 'none' },
+    { title: '未启动',   hint: '还没有 MR',                     test: (c) => c.stage === 'none' }
+  ];
+  groups.forEach((g) => {
+    const list = CARDS.filter(g.test);
+    const box = el('div', 'group');
+    const head = el('div', 'group-head');
+    head.append(el('span', 't', g.title), el('span', 'pill', String(list.length)), el('span', 'muted', g.hint));
+    box.append(head);
+    list.sort((a, b) => b.carried - a.carried || a.key.localeCompare(b.key)).forEach((c) => {
+      const row = el('div', 'srow');
+      const sp = sprintOf(c.sprint);
+      row.append(el('span', 'chip', sp.label), el('span', 'sum', c.summary), stageBadge(c.stage));
+      const left = el('div', 'muted');
+      left.style.gridColumn = '1 / -1';
+      left.textContent = c.key + ' · ' + c.type + ' · ' + (c.epic ? c.epic + ' ' + EPICS[c.epic] : '无 Epic') + (c.carried ? ' · 遗留 ' + c.carried + ' 轮' : '');
+      row.append(left);
+      box.append(row);
+    });
+    if (list.length === 0) box.append(el('div', 'muted', '  —— 空'));
+    stream.append(box);
+  });
+  wrap.append(stream);
+  return wrap;
+}
+
+// ---------------- 方案 C：Epic × 阶段矩阵 ----------------
+let cFilter = 'all';
+function VariantC() {
+  const wrap = document.createDocumentFragment();
+  const bar = el('div', 'filterbar');
+  bar.append(el('span', 'muted', '范围'));
+  [['all', '三轮全部'], ['prev', '上一轮'], ['cur', '本轮'], ['next', '下一轮']].forEach(([id, label]) => {
+    const b = el('button', 'pill' + (cFilter === id ? ' on' : ''), label);
+    b.onclick = () => { cFilter = id; render(); };
+    bar.append(b);
+  });
+  wrap.append(bar);
+
+  const rows = [...Object.keys(EPICS), '__none__'];
+  const stages = ['none', 'mr', 'approved', 'merged', 'built'];
+  const scoped = CARDS.filter((c) => cFilter === 'all' || c.sprint === cFilter);
+
+  const table = el('table', 'matrix');
+  const thead = el('thead');
+  const hr = el('tr');
+  hr.append(el('th', null, 'Epic'));
+  stages.forEach((s) => hr.append(el('th', null, STAGE[s].text)));
+  hr.append(el('th', null, '合计'));
+  thead.append(hr);
+  table.append(thead);
+
+  const tbody = el('tbody');
+  rows.forEach((epicKey) => {
+    const tr = el('tr');
+    const head = el('td', 'rowhead');
+    head.append(el('div', 'e', epicKey === '__none__' ? '无 Epic' : epicKey + ' · ' + EPICS[epicKey]));
+    const inRow = scoped.filter((c) => (c.epic || '__none__') === epicKey);
+    head.append(el('div', 'muted', inRow.length + ' 张'));
+    tr.append(head);
+    stages.forEach((s) => {
+      const td = el('td');
+      inRow.filter((c) => c.stage === s).forEach((c) => td.append(el('span', 'mini', c.key)));
+      tr.append(td);
+    });
+    tr.append(el('td', 'total', String(inRow.length)));
+    tbody.append(tr);
+  });
+  const totalRow = el('tr');
+  totalRow.append(el('td', 'rowhead', '合计'));
+  stages.forEach((s) => totalRow.append(el('td', 'total', String(scoped.filter((c) => c.stage === s).length))));
+  totalRow.append(el('td', 'total', String(scoped.length)));
+  tbody.append(totalRow);
+  table.append(tbody);
+  wrap.append(table);
+
+  wrap.append(el('div', 'muted', '行列都是同一批事实：Epic 决定"这是什么功能"，阶段决定"走到哪了"。跨 sprint 只作为筛选维度，不参与分组。'));
+  return wrap;
+}
+
+// ---------------- 切换 ----------------
+const VARIANTS = { A: ['三段泳道', VariantA], B: ['单列分组流', VariantB], C: ['Epic × 阶段矩阵', VariantC] };
+const ORDER = ['A', 'B', 'C'];
+const url = new URL(location.href);
+let current = (url.searchParams.get('variant') || 'A').toUpperCase();
+if (!VARIANTS[current]) current = 'A';
+
+function render() {
+  const [name, fn] = VARIANTS[current];
+  const app = document.getElementById('app');
+  app.textContent = '';
+  app.append(fn());
+  document.getElementById('sw-label').textContent = current + '（' + name + '）';
+  document.getElementById('v-name').textContent = '方案 ' + current;
+  const share = new URL(location.href);
+  share.searchParams.set('variant', current);
+  history.replaceState(null, '', share.toString());
+}
+
+function step(delta) {
+  const i = ORDER.indexOf(current);
+  current = ORDER[(i + delta + ORDER.length) % ORDER.length];
+  render();
+}
+document.getElementById('prev').onclick = () => step(-1);
+document.getElementById('next').onclick = () => step(1);
+window.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') step(-1);
+  if (e.key === 'ArrowRight') step(1);
+});
+
+render();
+</script>
+</body>
+</html>

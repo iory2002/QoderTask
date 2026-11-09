@@ -17,15 +17,16 @@
 **做**
 
 - 工作区 `WebviewPanel`（编辑器中的一个 tab），活动栏图标作为入口
-- 五列取自 Jira board 配置；不分行；项目过滤 + 「只看我的」（默认开）
+- 五列取自 Jira board 配置；不分行；项目过滤 + 「只看我的」（默认开，默认范围只有 NEX2）
 - 交付阶段徽章：`未提交` / `MR 待审` / `已 Approve 待合入` / `已合入待构建` / `已构建` / `无法判定`
 - **阶段追踪只覆盖 NEX2 与 NEX**；MAGR3 / IB 只做 Jira（无阶段徽章，也无自动化构建）
-- 拖拽跨列 → 拉该 issue 的 transitions → 表单（预填）→ POST 回写 Jira
-- 详情浮层：阶段事实链（MR、approve、构建号与时间）
-- 软闸门：阶段未达标仍可推进，但要二次确认
+- 详情浮层：阶段事实链（MR、approve、构建号与时间）+「打开 GitLab MR」+「在 Jira 中打开」
+
+> **2026-11-07 调整：放弃写回，看板只读。** Jira 的 transition 绝大多数带必填字段（screen），插件里无法可靠填写，拖拽会变成「拖下去→卡在表单」。因此没有拖拽、没有表单、没有软闸门，改状态一律去 Jira。
 
 **不做**
 
+- **写回 Jira**（原 v0.4 整体取消）：无拖拽、无 transition 表单、无软闸门。原因：transition 屏幕的必填字段无法在看板里可靠完成。
 - 同列内排序、手动标记完成、本地卡片、泳道/行分组
 - 拖拽回退（`Return` / `Revert` / `Fail`）——回退去 Jira 网页
 - 写 Jira 评论、改 assignee / worklog / 描述
@@ -80,7 +81,7 @@ WebView ⇄ 扩展，`postMessage`，统一 `{ type, requestId?, payload? }`。
 其余进 VS Code settings：
 
 ```jsonc
-"todoPanel.projects": ["MAGR3", "NEX", "NEX2", "IB"],
+"todoPanel.projects": ["NEX2"],
 "todoPanel.onlyMineByDefault": true,
 "todoPanel.pollIntervalSec": 45,
 "todoPanel.repos": [
@@ -101,7 +102,10 @@ WebView ⇄ 扩展，`postMessage`，统一 `{ type, requestId?, payload? }`。
 
 `jenkinsJobPath` 用 `/` 分段、每段已含编码后的 job 名（分支名里的 `/` 写作 `%2F`），实现时逐段 `encodeURIComponent`。
 
-MAGR3 / IB **不接代码托管**（也无自动化构建）：**不建 repo 条目**，卡片不出现阶段徽章，只有 Jira 状态与拖拽。这是设计选择，不是配置缺失。
+**当前默认范围只开 NEX2**。NEX、MAGR3、IB 的映射与结论仍保留在文档里，但不是默认范围：
+
+- 白名单外的项目不仅不出卡，**其 repo 条目也不发请求**（避免无意义的 GitLab/Jenkins 调用）。
+- 把项目加回 `todoPanel.projects` 即重新生效；NEX 的映射已经验证过（`nexus/dev/5.10.x`），MAGR3 / IB 则没有自动化构建，加回后只能到「已合入」。
 
 因此「有无 repo 条目」就是追踪开关：
 
@@ -139,15 +143,16 @@ MAGR3 / IB **不接代码托管**（也无自动化构建）：**不建 repo 条
 ```
 GET /rest/api/2/search
   jql = sprint = <activeSprintId>
-        AND project IN (MAGR3, NEX, NEX2, IB)
+        AND project IN (<项目白名单>)
         AND issuetype != Epic
-        AND [assignee = currentUser()]        // 「只看我的」开启时
-  fields = summary,status,issuetype,priority,updated,customfield_10000,customfield_10005,parent,comment
+        [OR key IN (<extraIssueKeys>)]   // 仅 devMode 打开时
+  fields = summary,status,issuetype,priority,updated,assignee,customfield_10000,customfield_10005,parent,comment
   maxResults = 500           // 实测被接受，112 条一次返回
   // 排序：ORDER BY Rank ASC
 ```
 
-- **必须包含 Done 状态**（现有实现 `status not in (..., Done)` 会让 Done 列永远为空）。
+- **「只看我的」不进 JQL**：全量拉一次，服务端把 `isMine`（`assignee.name === /myself` 的 `key/name`）算好随卡片下发；切开关只在前端过滤，**不重发请求**。刷新按钮才是全量重取。
+- **必须包含 Done 状态**（旧实现 `status not in (..., Done)` 会让 Done 列永远为空）。
 - 不排除 Sub-task（见 §7.3），只排除 Epic。
 - `fields.status.statusCategory` 可作兜底信息，不作为分列依据。
 
@@ -202,6 +207,13 @@ POST /rest/api/2/issue/{key}/transitions
 
 **无构建通道的项目**（`jenkinsJobPath: null`）：阶梯只到第 2 级，文案直接用「**已合入**」，不出现「待构建」字样，也不出 Build failed。否则卡片会永久挂在等构建上，等于误报。
 
+**构建校验按 issue 类型分化**：只有 `Story` 与 `Bug` 看构建（实测只有它们走代码交付链）；`Task`、`Sub-task` 不查 Jenkins，阶段同样顶格在「已合入」。两个理由：
+
+1. Task / Sub-task 是配置、测试用例、文档类工作，本来就不会触发构建，盯着构建会让它们永远停在「待构建」。
+2. Jenkins 取数失败只应影响需要构建的类型；一个 Task 不应因为 Jenkins 挂了而变成「无法判定」。
+
+实现要点：类型名单可配置（`todoPanel.buildCheckIssueTypes`，默认 `Story`/`Bug`，大小写不敏感精确匹配）；仓库内没有任何需要构建校验的卡时，**连 Jenkins 请求都不发**。
+
 构建失败：阶段停在 `已合入待构建` 并挂红色 `Build failed`；构建进行中（`result == null`）视为没有结果，既不成功也不失败。
 
 ### 7.3 Sub-task
@@ -241,21 +253,22 @@ POST /rest/api/2/issue/{key}/transitions
 
 ## 10. 交互规格
 
+**只读。** 看板不提供任何写 Jira 的入口。
+
 | 场景 | 行为 |
 |---|---|
-| 拖到合法列 | 弹表单（字段按 issue 当前值预填，只提交改动项）→ 确认 → 乐观移动 + 「提交中」半透明 → 成功变实 / 失败弹回并说明原因 |
-| 拖到非法列 | 拒绝并提示实际可去的列（例如「Story 只能先到 In Code Review」） |
-| 拖回左列 | 拒绝，提示「回退请到 Jira 操作」 |
-| 阶段未达标仍拖进 In Test | 软闸门：列出缺什么（未合入 / 构建未过）→ 二次确认 |
-| 字段类型不支持 | 硬阻断：表单顶部列出不支持的字段并给「在 Jira 中完成」链接，禁用提交 |
-| 写入进行中轮询返回 | 该卡冻结，不参与重绘；写完后以本地结果为准直到下次轮询一致 |
+| 点卡片 | 打开右侧详情浮层（阶段事实链） |
+| 点卡片上的 key | 浏览器打开 Jira issue |
+| 详情浮层「打开 GitLab MR」 | 浏览器打开卡片上展示的那个 MR |
+| 详情浮层「在 Jira 中打开」 | 浏览器打开 issue 页，改状态在那里做 |
 | 数据源缺失 | 阶段显「无法判定」+ 顶栏可折叠横幅（GitLab 未配置 / 某项目 job 未填） |
 | 401/403 | 提示指到具体文件与字段（`~/.scrumbuddy/config.json` 的 `jira.password` / `gitlab.token` / `jenkins.token`） |
 | 超时 | 保留上次成功数据，标「数据可能过期 · hh:mm」 |
+| 首次加载 | 五列骨架屏 + 「正在加载看板…」，不渲染空列也不弹告警 |
 
 轮询：30～60s；请求串行排队（上一轮未返回不发下一轮）；**数据无变化则不重绘**。
 
-表单支持 `string`（单/多行）、`option`（单选）、`array`（多选）、`user` 四类控件；其余降级。
+> 已删除的写回通道：`card:fetchTransitions` / `card:transition` / `card:transitions` / `card:transitionResult`，以及 `dropRules` / `transitionForm` / `softGate` 三个纯函数模块及其 21 条单测。
 
 ---
 
@@ -263,7 +276,8 @@ POST /rest/api/2/issue/{key}/transitions
 
 基线：`.scratch/jira-board/prototype/board.html`（可直接打开对照）。
 
-- **顶栏**：项目 chip（MAGR3 / NEX / NEX2 / IB）、「只看我的」（默认勾）、同步时间、刷新、告警横幅。
+- **顶栏**（从左到右）：产品名 + **sprint 名（亮色 `#FAFBFD` 突出）** → 项目范围**只读标签**（取自 `todoPanel.projects`，不可点）→ 「只看我的」（纯视图开关）→ 列外状态计数 → 同步时间 + 张数 → 刷新。
+  > 2026-11-07 调整：移除「全部」按钮与项目 chip（范围只能改设置）；**DEV 开关从顶栏移回设置**（`todoPanel.devMode`），顶栏不再显示。
 - **列**：五列常驻不隐藏；列头显示名称与计数；空列保持虚线框。窄于 900px 时横向滚动，不上下堆叠。
 - **卡片**（宽 288px，标题截 3 行）：
   ```
@@ -275,8 +289,9 @@ POST /rest/api/2/issue/{key}/transitions
   `*` 头像只在「只看我的」关闭时显示。
 - **阶段徽章配色**：未提交 `#f1f3f5/#6b7280`；MR 待审 `#3A5A7F/#fff`；已 Approve `#7C3AED/#fff`；已合入待构建 `#F59E0B/#3d2800`；已构建 `#10B981/#fff`；Build failed `#EF4444/#fff`；无法判定 灰底虚线框 `#b42318` 文字。
 - **Done 列**：全量展示但整体灰化。
-- **详情浮层**：阶段事实链（MR 链接 / approver / merged_at / build 号 / 构建时间 / 分支）+ 推导说明 + 「在 Jira 中打开」。
+- **详情浮层**：阶段事实链（MR 链接 / approver / merged_at / build 号 / 构建时间 / 分支）+ 推导说明 + 「打开 GitLab MR !n」+「在 Jira 中打开」。
   > 实现备注：「推送 In Test」按钮已取消。地图里定的手动手势只有「拖拽跨列」，浮层里的按钮会变成第二条写入路径，与 `card:transition` 的单卡单次通道重复。
+  > 实现备注：MR 已创建时，浮层底部必须有显式的「打开 GitLab MR」按钮（指向卡片上展示的那个 MR）；多 MR 时按钮注明「另有 N 个」，其余 MR 在列表里逐个可点。只给「在 Jira 中打开」不够——用户看交付事实时下一步往往就是去 MR 上看 diff/评论。
 
 ---
 
@@ -304,11 +319,10 @@ interface BoardCard {
 
 ## 13. 分期与验收
 
-**v0.3 只读看板** — 五列 + 项目过滤 + 只看我的 + 卡片 + MR 阶段 + 详情浮层（只读）；不写 Jira。
+**v0.3 只读看板 + 阶段徽章** — 五列 + 项目过滤 + 只看我的 + 卡片 + MR 阶段 + 详情浮层（只读）；不写 Jira。
 验收：能看到自己的 6 张卡；Done 列非空；GitLab 未配置时显示「无法判定」而非「未提交」。
 
-**v0.4 写回** — transitions 判定 + 表单 + 软闸门 + 乐观更新 + 冻结。
-验收：Bug 从 In Progress 拖到 In Test 成功；Story 拖到 In Test 被拒并提示只能到 In Code Review；必填缺失时字段级报错定位到控件；写失败卡片回弹且原因可见。
+**~~v0.4 写回~~** — 已取消（2026-11-07）。transition 必填字段无法在看板里可靠完成。
 
 **v0.5 构建阶段** — 时间窗判定 + `已合入待构建/已构建/Build failed` + 详情补构建事实。
 验收：有更晚的 SUCCESS 时显「已构建」并给出时间；进行中不误判为失败；job 未配置显「无法判定」。

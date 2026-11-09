@@ -1,4 +1,4 @@
-# Jira Board (todo-panel) installer — run this with QoderCN fully closed.
+﻿# Jira Board (todo-panel) installer — run this with QoderCN fully closed.
 #
 # Why a script instead of `--install-extension` inside the IDE:
 # QoderCN locks %USERPROFILE%\.qoder-cn\extensions while it runs, so any attempt
@@ -14,7 +14,13 @@ $version = $pkg.version
 $vsix = Join-Path $root "todo-panel-$version.vsix"
 $extRoot = Join-Path $env:USERPROFILE ".qoder-cn\extensions"
 $target = Join-Path $extRoot "your-name.todo-panel-$version"
-$cli = "C:\Program Files\QoderCN\bin\code.cmd"
+# 机器上可能同时装新旧两个 IDE：新版在 "Qoder CN IDE"（带空格），旧版在 "QoderCN"。
+# 用 CLI 装扩展要与正在跑的那个版本对应，否则会把扩展装给另一个版本。
+$cliCandidates = @(
+    "C:\Program Files\Qoder CN IDE\bin\code.cmd",
+    "C:\Program Files\QoderCN\bin\code.cmd"
+)
+$cli = $cliCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not (Test-Path $vsix)) {
     Write-Host "找不到 $vsix" -ForegroundColor Red
@@ -23,8 +29,10 @@ if (-not (Test-Path $vsix)) {
 }
 
 # 1) QoderCN 必须在退出状态，否则扩展目录被锁
-$running = Get-Process -Name QoderCN -ErrorAction SilentlyContinue
-if ($running) {
+# 注意进程名是「Qoder CN IDE」（带空格），不是 QoderCN —— 后者只是安装目录名
+$ideNames = @('Qoder CN IDE', 'QoderCN')
+$running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $ideNames -contains $_.ProcessName })
+if ($running.Count -gt 0) {
     Write-Host "QoderCN 还在运行（$($running.Count) 个进程），扩展目录被锁定。" -ForegroundColor Red
     Write-Host "请先完全退出：在 QoderCN 里按 Ctrl+Q（不是只关窗口）。" -ForegroundColor Yellow
     Write-Host "然后重新运行本脚本。" -ForegroundColor Yellow

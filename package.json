@@ -1,8 +1,8 @@
 {
   "name": "todo-panel",
-  "displayName": "Jira Board",
-  "description": "在编辑器标签页里看 Jira 看板：五列取自 board 配置，卡片挂 GitLab / Jenkins 交付事实，拖一下就能把状态推进一步。",
-  "version": "0.3.0",
+  "displayName": "PC Board",
+  "description": "PC Board：Jira 看板（五列取自 board 配置，卡片挂 GitLab / Jenkins 交付事实）与 GitLab 看板（待我审 / 我提交的），只读——改状态去 Jira，写操作去 GitLab。",
+  "version": "0.3.2",
   "icon": "icon.png",
   "publisher": "your-name",
   "repository": {
@@ -15,24 +15,41 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "jira-board",
+          "id": "jiraBoard",
           "title": "Jira Board",
           "icon": "$(project)"
+        },
+        {
+          "id": "gitlabBoard",
+          "title": "GitLab Board",
+          "icon": "$(git-pull-request)"
         }
       ]
     },
     "views": {
-      "jira-board": [
+      "jiraBoard": [
         {
-          "type": "webview",
           "id": "jiraBoard.entry",
           "name": "Jira Board"
+        }
+      ],
+      "gitlabBoard": [
+        {
+          "id": "gitlabBoard.entry",
+          "name": "GitLab Board"
         }
       ]
     },
@@ -43,38 +60,67 @@
         "icon": "$(project)"
       },
       {
+        "command": "todoPanel.openMrBoard",
+        "title": "GitLab Board: Open Board",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "todoPanel.openSettings",
+        "title": "PC Board: Open Settings",
+        "icon": "$(gear)"
+      },
+      {
         "command": "todoPanel.refresh",
         "title": "Jira Board: Refresh",
         "icon": "$(sync)"
       }
     ],
-    "configuration": {
-      "title": "Jira Board",
-      "properties": {
-        "todoPanel.boardId": {
+    "configuration": [
+      {
+        "id": "jira",
+        "title": "PC Board: Jira",
+        "properties": {
+        "pcBoard.boardId": {
           "type": "number",
           "default": 23,
           "description": "Jira board id。列定义来自该 board 的 configuration。"
         },
-        "todoPanel.projects": {
+        "pcBoard.projects": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["MAGR3", "NEX", "NEX2", "IB"],
-          "description": "看板范围的项目白名单。不在白名单里的项目不会出现在看板上。"
+          "default": ["NEX2"],
+          "description": "看板范围的项目白名单。不在白名单里的项目不会出现在看板上；白名单外的 repo 映射也不会发请求。"
         },
-        "todoPanel.onlyMineByDefault": {
+        "pcBoard.onlyMineByDefault": {
           "type": "boolean",
           "default": true,
-          "description": "打开看板时默认只看指派给自己的 issue。"
+          "description": "打开看板时默认只看指派给自己的 issue。只是个视图开关：数据始终全量拉取，切换不会重新请求。"
         },
-        "todoPanel.pollIntervalSec": {
+        "pcBoard.pollIntervalSec": {
           "type": "number",
-          "default": 45,
+          "default": 60,
           "minimum": 30,
-          "maximum": 60,
-          "description": "自动刷新间隔（秒），建议 30～60。"
+          "maximum": 600,
+          "description": "Jira 看板打开时的自动刷新间隔（秒），默认 60。"
         },
-        "todoPanel.repos": {
+        "pcBoard.buildCheckIssueTypes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["Story", "Bug"],
+          "description": "哪些 issue 类型需要看构建。其余类型（如 Task、Sub-task）不查 Jenkins，阶段顶格在「已合入」；没写代码却要等构建会让它们永远挂着。"
+        },
+        "pcBoard.extraIssueKeys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "额外钉住的 issue key（如 NEX2-610）：仅在 pcBoard.devMode 打开时生效，绕开 sprint 与「只看我的」。"
+        },
+        "pcBoard.devMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "dev 开关。打开后才会把 pcBoard.extraIssueKeys 里的 issue 钉进看板，用于验收时单独盯一张还没进 sprint 的卡；平时关掉，看板保持干净。"
+        },
+        "pcBoard.repos": {
           "type": "array",
           "description": "Jira 项目到 GitLab 仓库 / Jenkins job 的映射。没有条目的项目不做阶段追踪，卡片不出现阶段徽章。",
           "default": [
@@ -115,9 +161,80 @@
               }
             }
           }
+        },
+        "pcBoard.badge.jira.mode": {
+          "type": "string",
+          "enum": ["development", "testing"],
+          "enumDescriptions": [
+            "开发中：Open / In Progress / In review / In Code Review",
+            "测试中：In Test"
+          ],
+          "default": "development",
+          "description": "活动栏 Jira 图标上显示哪个数字。一个图标只有一处数字位，另一个数字在侧边栏条目里显示。"
+        },
+        "pcBoard.badge.jira.onlyMine": {
+          "type": "boolean",
+          "default": true,
+          "description": "角标只统计指派给自己的 issue。关闭后统计当前 sprint 里的全部卡片。"
+        },
+        "pcBoard.badge.jira.developmentStatuses": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["Open", "In Progress", "In review", "In Code Review"],
+          "markdownDescription": "算「开发中未完成」的 Jira 状态名。大小写与首尾空格不敏感；同一张卡只归一组。"
+        },
+        "pcBoard.badge.jira.testingStatuses": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["In Test"],
+          "markdownDescription": "算「测试中未完成」的 Jira 状态名。"
+        },
+        "pcBoard.badge.jira.pollIntervalSec": {
+          "type": "number",
+          "default": 60,
+          "minimum": 30,
+          "maximum": 1800,
+          "description": "看板面板没打开时，Jira 角标的刷新间隔（秒），默认 60。面板打开后改用 pcBoard.pollIntervalSec。"
+        }
+        }
+      },
+      {
+        "id": "gitlab",
+        "title": "PC Board: GitLab",
+        "properties": {
+          "pcBoard.mrBoard.scopes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["ultrasoundgeneralimaging/gipc-app@nexus/dev/7.10.x"],
+            "markdownDescription": "GitLab 看板的取数范围，每行一条 `仓库路径@目标分支`。\n\n- 例：`ultrasoundgeneralimaging/gipc-app@nexus/dev/7.10.x`\n- 再加一条 5.10.x：`ultrasoundgeneralimaging/gipc-app@nexus/dev/5.10.x`\n\n与 Jira 看板的 `pcBoard.repos` 相互独立。"
+          },
+          "pcBoard.mrBoard.pollIntervalSec": {
+            "type": "number",
+            "default": 60,
+            "minimum": 30,
+            "maximum": 600,
+            "description": "GitLab 看板打开时的自动刷新间隔（秒），默认 60。"
+          },
+          "pcBoard.badge.gitlab.mode": {
+            "type": "string",
+            "enum": ["reviewQueue", "awaitingOthers"],
+            "enumDescriptions": [
+              "待我审：审查队列里的 MR 数",
+              "等别人审：我提交但还没被其他人批准的 MR 数"
+            ],
+            "default": "reviewQueue",
+            "description": "活动栏 GitLab 图标上显示哪个数字。另一个数字在侧边栏条目里显示。"
+          },
+          "pcBoard.badge.gitlab.pollIntervalSec": {
+            "type": "number",
+            "default": 60,
+            "minimum": 30,
+            "maximum": 1800,
+            "description": "看板面板没打开时，GitLab 角标的刷新间隔（秒），默认 60。面板打开后改用 pcBoard.mrBoard.pollIntervalSec。"
+          }
         }
       }
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -125,7 +242,7 @@
     "build:webview": "node build-webview.js",
     "watch:webview": "node build-webview.js --watch",
     "watch": "tsc -watch -p ./",
-    "pretest": "tsc -p tsconfig.test.json",
+    "pretest": "node scripts/clean-out.js && tsc -p tsconfig.test.json",
     "test": "node --test \".test-out/test/**/*.test.js\"",
     "package": "npm run compile && node scripts/check-webview-build.js && vsce package"
   },

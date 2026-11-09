@@ -1,5 +1,17 @@
 # 03 结论：Jenkins 能读，但拿不到 commit，只能走时间窗
 
+> **⚠ 2026-11-09 纠正：本文第 3 节的结论是错的，不要据此设计。**
+>
+> 构建的 commit 是拿得到的，字段是 `actions[]` 里 `_class = hudson.plugins.git.util.BuildData`
+> 的 `lastBuiltRevision.SHA1`。本文当时查的是 `lastBuiltRevision.rev`——那个键在 REST JSON 里
+> 不存在，于是被误判成「无 rev」。另外 `changeSet` 为空只说明该 job 没开 changelog，
+> 不代表没有 revision；console 里也有 `Checking out Revision <sha>`，GitLab 侧
+> `/repository/commits/:sha/statuses` 与 `/pipelines?sha=` 还能反查 Jenkins 构建号。
+>
+> 证据：`.scratch/devops-board/research/probe-jenkins-attribution.js`（只读，可重跑）。
+> 本文其余部分（job 路径编码、认证、构建节奏与耗时、配置形态）仍然成立。
+> 由此产生的改进项见 `.scratch/devops-board/issues/06-build-attribution-upgrade.md`。
+
 探针：`research/probe-jenkins*.js`（只读，可重跑）。
 
 ## 1. 目标 job 已定位

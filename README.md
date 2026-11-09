@@ -1,24 +1,38 @@
 # Jira Board
 
-在 QoderCN 的编辑器标签页里看 Jira 看板：五列取自 Jira board 配置，卡上挂 GitLab / Jenkins 的交付事实，拖一下就能把状态推进一步。
+在 QoderCN 的编辑器标签页里看 Jira 看板：五列取自 Jira board 配置，卡上挂 GitLab / Jenkins 的交付事实。**只读**——改状态请到 Jira。
 
-> **本地待办已下线（不可逆）**：这个扩展以前是一个本地待办侧边栏，`.todo-data.json` 里的数据不再读写，也没有导出功能。入口换成了活动栏的 **Jira Board** 图标。
+> **本地待办已下线（不可逆）**：这个扩展以前是一个本地待办侧边栏，`.todo-data.json` 里的数据不再读写，也没有导出功能。入口换成了活动栏的两个图标：**Jira Board** 与 **GitLab Board**。
 
 ## 功能
 
 - **五列看板** — 列与列的 status 集合来自 `GET /rest/agile/1.0/board/{id}/configuration`，不在插件里写死。
-- **卡片** — 活跃 sprint ∩ 项目白名单，按 Jira Rank 升序；显示 key、标题、类型、优先级、Epic chip、评论数；子任务带「子」角标。默认只看指派给自己的，关掉后显示全量并带经办人头像。
+- **卡片** — 活跃 sprint ∩ 项目白名单，按 Jira Rank 升序；显示 key、标题、类型、优先级、Epic chip、评论数；子任务带「子」角标。默认「只看我的」，关掉后显示全量并带经办人头像。**「只看我的」与项目 chip 都是纯视图过滤**：数据始终一次全量拉取，切开关不会重新请求；只有点「刷新」才重新取数。
 - **交付阶段徽章** — `未提交` / `MR 待审` / `已 Approve 待合入` / `已合入待构建` / `已构建`，构建失败另挂 `Build failed`；取数失败显示 `无法判定`（绝不假装「未提交」）。MAGR3 / IB 不接代码托管，不出徽章。
 - **详情浮层** — 点卡片看阶段事实链：命中的 MR、批准人、合入时间、构建号与绝对时间、推导依据，以及「在 Jira 中打开」。
-- **拖拽推进** — 合法目标由该 issue 自己的 transitions 决定（Story 先到 In Code Review，Bug/Task 直达 In Test，Task/Sub-task 可一步到 Done）；回退请到 Jira 网页。
-- **表单写回** — 跨列后弹表单，字段按 issue 当前值预填，只提交你改动过的项；插件填不了的字段会直接指到 Jira。写回单卡单次，无批量操作。
-- **软闸门** — 阶段没达标仍可推进，但会先列出缺什么再由你确认。
+- **只读，不改状态** — 看板不做拖拽：Jira 的 transition 大多带必填字段（screen），插件里填不了，硬做只会卡在半路。改状态请点卡片详情里的「在 Jira 中打开」。
+- **活动栏角标** — 两个图标各带一个数字：Jira 图标显示「开发中」或「测试中」的未完成卡数（设置里选），GitLab 图标显示「待我审」或「等别人审」的 MR 数。另一个数字在侧边栏条目里显示——一个活动栏图标只有一处数字位。
 
 ## 环境要求
 
 - [QoderCN IDE](https://www.qoder.com)（VS Code 1.106 分支）
 - Node.js 18+（仅构建时需要）
 - ScrumBuddy 配置 `~/.scrumbuddy/config.json`
+
+### 用 run-qodercn.cmd 启动 IDE
+
+内网 Jenkins / GitLab 的证书由 GE HealthCare 自签根签发，Node 自带的 CA 库里没有，
+默认校验必然失败（`unable to verify the first certificate`）。Node 只在**进程启动时**读
+`NODE_USE_SYSTEM_CA`，扩展内运行时再设无效，所以要用仓库根目录的 `run-qodercn.cmd`
+启动 IDE——它会设好环境变量再拉起 IDE。
+
+链校验仍然生效（走 Windows 系统证书库），只放行主机名比对：内网证书的 SAN 里只有
+`ulsgi-bm.avs.uswau.lab.ge-healthcare.net`，没有我们实际请求的 `ulsgi-bm.lab.ge-healthcare.net`。
+
+### 扩展在不受信任的工作区
+
+扩展声明了 `capabilities.untrustedWorkspaces.supported`，因此在未信任的工作区也能启用
+（它不读写工作区文件，只用 `~/.scrumbuddy/config.json` 里的凭据访问内网服务）。
 
 ### 凭据配置
 
@@ -37,11 +51,14 @@
 ### 扩展设置
 
 ```jsonc
-"todoPanel.boardId": 23,
-"todoPanel.projects": ["MAGR3", "NEX", "NEX2", "IB"],
-"todoPanel.onlyMineByDefault": true,
-"todoPanel.pollIntervalSec": 45,
-"todoPanel.repos": [
+"pcBoard.boardId": 23,
+"pcBoard.projects": ["NEX2"],
+"pcBoard.onlyMineByDefault": true,
+"pcBoard.pollIntervalSec": 60,
+"pcBoard.buildCheckIssueTypes": ["Story", "Bug"],
+"pcBoard.extraIssueKeys": [],
+"pcBoard.devMode": false,
+"pcBoard.repos": [
   {
     "jiraProjects": ["NEX2"],
     "gitlabProject": "ultrasoundgeneralimaging/gipc-app",
@@ -59,13 +76,23 @@
 
 **「有没有 repo 条目」就是阶段追踪开关**：没有条目的项目（例如 MAGR3 / IB）不计算阶段、不出徽章，也不告警。`jenkinsJobPath` 为 `null` 时阶段顶格在「已合入」，不会挂在等构建上。
 
+**项目白名单决定看板看到什么，也决定发不发请求**：默认只有 `NEX2`。白名单外的 repo 映射（例如 NEX 那条）会保留但**不发请求**，把项目加回 `pcBoard.projects` 即可重新生效。
+
+**只有写代码的类型才看构建**：默认 `Story` 与 `Bug`，其余类型（`Task`、`Sub-task`）不查 Jenkins，阶段顶格在「已合入」——它们不做构建，盯着构建会永远挂着。仓库里没有任何需要构建校验的卡片时，连 Jenkins 请求都不会发。类型名按大小写不敏感精确匹配，`In-Sprint Bug` 这类变体需要显式加进 `pcBoard.buildCheckIssueTypes`。
+
+**钉住还没进 sprint 的 issue（仅 dev）**：先在 `pcBoard.extraIssueKeys` 里填 key（如 `["NEX2-610"]`），再把 `pcBoard.devMode` 打开（在设置里，顶栏不提供开关），它才会绕开 sprint 与「只看我的」出现在看板上，阶段照常算。devMode 关掉后钉住名单直接失效，看板回到 `sprint ∩ 项目白名单` 的干净状态。
+
 `jenkinsJobPath` 用 `/` 分段，每段填**已经编码过一次**的 job 名（分支里的 `/` 写作 `%2F`），插件会再编码一次（URL 里是 `%252F`）。
+
+**活动栏角标**：`pcBoard.badge.jira.mode` 选 Jira 图标显示「开发中」还是「测试中」，`pcBoard.badge.gitlab.mode` 选 GitLab 图标显示「待我审」还是「等别人审」；两个数字都在侧边栏条目里显示。哪两组状态算未完成由 `pcBoard.badge.jira.developmentStatuses` / `pcBoard.badge.jira.testingStatuses` 决定，按状态名匹配、大小写不敏感；`pcBoard.badge.jira.onlyMine` 控制是否只算自己的。`pcBoard.badge.jira.pollIntervalSec` / `pcBoard.badge.gitlab.pollIntervalSec` 是两个角标在看板面板没打开时的刷新间隔（默认各 60 秒）。
 
 ## 打开看板
 
 1. 点活动栏的 **Jira Board** 图标 —— 编辑器区会出现一个 `Jira Board` 标签页；再点一次聚焦同一个标签，不会重复开。
-2. 标签被关掉后，命令面板执行 **Jira Board: Open Board**，或点侧边栏里的「打开 Jira 看板」链接。
-3. 命令面板的 **Jira Board: Refresh** 立即重拉一次。
+2. 点活动栏的 **GitLab Board** 图标 —— 同理打开 `GitLab Board` 标签页。两个侧边栏条目各开各的，不再互相跳转。
+3. 标签被关掉后，命令面板执行 **Jira Board: Open Board** / **GitLab Board: Open Board**。
+4. 命令面板的 **Jira Board: Refresh** 立即重拉一次。
+5. 侧边栏条目里的「打开设置」直接定位到本扩展的 Jira / GitLab 配置。
 
 ## 构建与安装
 
@@ -79,15 +106,17 @@ npm run package     # 编译 + 校验 media/board.js + 打 vsix
 安装：
 
 ```powershell
-& "C:\Program Files\QoderCN\bin\qoder-cn.cmd" --install-extension todo-panel-0.3.0.vsix
+& "C:\Program Files\QoderCN\bin\code.cmd" --install-extension todo-panel-0.3.1.vsix --force
 ```
 
-> 不要用 `code --install-extension`，那会装到 VS Code 而不是 QoderCN。
+> 必须用 QoderCN 自己 `bin` 下的 **`code.cmd`**（它就是 IDE 的 CLI，内部以 `ELECTRON_RUN_AS_NODE` 跑 `resources/app/out/cli.js`）。
+> 不要用全局 `code`（那是 VS Code）；也不要用 `bin\qoder-cn.cmd`——那个是 Qoder 的 **agent CLI** 桥接，不认 `--install-extension`，会报 `unknown option`。
+> IDE 正在运行时扩展目录被占用，安装可能报 EPERM/EBUSY，先完全退出 IDE（Ctrl+Q）或用 `install.ps1`。
 
 ## 开发
 
 ```bash
-npm test            # 纯逻辑单测：阶段判定 / key 匹配 / MR 关联 / 拖拽合法性 / 表单 / 软闸门
+npm test            # 纯逻辑单测：阶段判定 / key 匹配 / MR 关联 / 数据指纹
 npm run watch       # 扩展侧 tsc watch
 npm run watch:webview   # WebView 侧 esbuild watch
 ```
@@ -102,11 +131,8 @@ src/
 ├── board/
 │   ├── BoardPanel.ts            # WebviewPanel + 消息管道
 │   ├── BoardEntryView.ts        # 活动栏入口
-│   ├── BoardState.ts            # 内存态、轮询、阶段编排、写回
-│   ├── config.ts                # todoPanel.* 设置
-│   ├── dropRules.ts             # 拖拽合法性（纯函数）
-│   ├── transitionForm.ts        # 表单构建与改动收集（纯函数）
-│   ├── softGate.ts              # 软闸门（纯函数）
+│   ├── BoardState.ts            # 内存态、轮询、阶段编排
+│   ├── config.ts                # pcBoard.* 设置
 │   ├── fingerprint.ts           # 数据指纹（纯函数）
 │   └── errors.ts                # 错误 → 人话
 ├── models/Board.ts              # 扩展与 WebView 共享的类型

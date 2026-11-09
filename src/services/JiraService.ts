@@ -4,6 +4,7 @@ import { URL } from 'url';
 
 import type { BoardColumn } from '../models/Board';
 import { loadScrumBuddyConfig } from './ScrumBuddyConfig';
+import { createIntranetHttpsAgent, intranetTlsOptions } from './intranetTls';
 
 /** ScrumBuddy 配置中的 Jira 部分 */
 interface ScrumBuddyJiraConfig {
@@ -36,23 +37,6 @@ export interface JiraIssue {
 export interface JiraSearchResult {
     issues: JiraIssue[];
     total: number;
-}
-
-export interface RawTransition {
-    id: string;
-    name: string;
-    to: { id: string; name: string; statusCategory?: { key: string } };
-    fields?: Record<string, RawTransitionField>;
-    hasScreen?: boolean;
-}
-
-export interface RawTransitionField {
-    required?: boolean;
-    name?: string;
-    schema?: { type?: string; items?: string; system?: string; custom?: string; customId?: number };
-    allowedValues?: any[];
-    hasDefaultValue?: boolean;
-    operations?: string[];
 }
 
 export class JiraApiError extends Error {
@@ -98,7 +82,7 @@ export class JiraApiError extends Error {
 export class JiraService {
     private config: ScrumBuddyJiraConfig | null = null;
     // 内网自签证书
-    private readonly httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    private readonly httpsAgent = createIntranetHttpsAgent();
 
     constructor() {
         this.reloadConfig();
@@ -173,39 +157,25 @@ export class JiraService {
         return { issues: response.issues ?? [], total: response.total ?? 0 };
     }
 
-    /** 读单个 issue 的全部字段：表单预填的唯一可靠来源 */
-    public async getIssue(key: string): Promise<JiraIssue> {
-        return this.request<JiraIssue>(
+    /**
+     * 当前凭据对应的用户。用于「只看我的」的本地过滤：
+     * 一次拉全量，切开关只切视图，不再重发请求。
+     */
+    public async getMyself(): Promise<{ name: string; displayName: string }> {
+        const me = await this.request<{ name?: string; key?: string; displayName?: string }>(
             'GET',
-            `/rest/api/2/issue/${encodeURIComponent(key)}?fields=*all`,
+            '/rest/api/2/myself',
             undefined,
-            10000
+            5000
         );
-    }
-
-    /** 该 issue 当前可用的 transitions（含字段元数据） */
-    public async getTransitions(key: string): Promise<RawTransition[]> {
-        const response = await this.request<{ transitions?: RawTransition[] }>(
-            'GET',
-            `/rest/api/2/issue/${encodeURIComponent(key)}/transitions?expand=transitions.fields`,
-            undefined,
-            10000
-        );
-        return response.transitions ?? [];
-    }
-
-    /** 只提交改动项；不写评论 */
-    public async transition(key: string, transitionId: string, fields: Record<string, unknown>): Promise<void> {
-        const payload: Record<string, unknown> = { transition: { id: transitionId } };
-        if (Object.keys(fields).length > 0) {
-            payload.fields = fields;
-        }
-        await this.request('POST', `/rest/api/2/issue/${encodeURIComponent(key)}/transitions`, payload, 20000);
+        return { name: me.key ?? me.name ?? '', displayName: me.displayName ?? '' };
     }
 
     /**
      * 统一请求入口：与 GitLabService 同构的双协议实现。
      * http 实例以前被 `port || 80` 写死过，https 站点直接失效。
+     *
+     * 看板是只读的：这里不发 POST，改状态去 Jira 网页。
      */
     private request<T>(
         method: 'GET' | 'POST',
@@ -242,7 +212,7 @@ export class JiraService {
                     ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) } : {}),
                 },
                 timeout: timeoutMs,
-                ...(isHttps ? { agent: this.httpsAgent } : {}),
+                ...(isHttps ? { agent: this.httpsAgent, ...intranetTlsOptions } : {}),
             };
 
             const req = transport.request(options, (res) => {

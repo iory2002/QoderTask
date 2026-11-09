@@ -4,3 +4,4 @@ fake-tasks.md
 out/
 .test-out/
 *.vsix
+.scratch/mr-board/diffs/

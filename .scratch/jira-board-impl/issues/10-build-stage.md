@@ -24,3 +24,8 @@
 - 构建是独立的一跳：`jenkinsJobPath` 配了但 Jenkins 取不到数（含未配置），该 repo 的卡片一律「无法判定」+ 顶栏横幅，不假装「已合入」。
 - `jenkinsJobPath: null` → `buildChannel = 'merge-only'`，阶段顶格「已合入」（卡片文案不带「待构建」），也不显示 `Build failed`。
 - 详情浮层的构建区展示构建号（可点开 Jenkins）、结果（进行中则写「进行中」）、绝对开始时间与分支；卡片徽章的 tooltip 也带完整依据，避免把 20 小时前的构建当成刚刚发生。
+- **构建校验按 issue 类型分化**（用户补充）：只有 `Story` 与 `Bug` 看构建；`Task`、`Sub-task` 不查 Jenkins，阶段顶格在「已合入」。原因有两层：它们本就不走构建链路；若让 Jenkins 故障也作用于它们，一个 Task 会因为构建挂了而变成「无法判定」。
+  - 类型名单进 `todoPanel.buildCheckIssueTypes`（默认 `['Story','Bug']`，大小写不敏感精确匹配）；`In-Sprint Bug` 这类变体需显式加入，不隐式按关键字匹配——宁可默认不包含，也不猜。
+  - `resolveStage` 新增 `buildChecked` / `buildsOk` / `issueType`：`buildChannel === 'full' && !buildChecked` 时降级成 `merge-only`；Jenkins 取数失败只在「需要构建校验且已合入」时判 unknown，未合入的卡不受影响。
+  - `applyStages` 里当仓库内没有任何需要构建校验的卡时，**连 Jenkins 请求都不发**。
+  - 测试 +6：类型白名单、Task/Sub-task 顶格、Story 遇 Jenkins 故障为 unknown、Task 遇故障仍 merged、未合入卡不受 Jenkins 故障影响。

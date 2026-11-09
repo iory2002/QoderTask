@@ -10,8 +10,7 @@ Status: decided
 - **列**：取 Jira board 配置的 `columnConfig.columns`，不靠 transitions 反推。
 - **行**：**不分行**。整个活跃 sprint 排成一条纵向滚动带；顶部提供项目多选过滤（选项从 sprint 内出现的 project key 自动生成）与「只看我的」开关。
 - **卡片**：交付阶段徽章——`未提交` / `MR 待审` / `已 Approve 待合入` / `已合入待构建` / `已构建`，构建失败另挂红色 Build failed 标记。无 repo 条目的项目（MAGR3 / IB）不出徽章；有构建通道但无 job（`jenkinsJobPath: null`）顶格为「已合入」。事实来自 GitLab MR 与 Jenkins 构建。
-- **写**：拖拽跨列 → 拉该 issue 的 transitions → 表单（默认填满当前值）→ 确认 → POST 回写 Jira。实测每次写都有必填项，**表单是主路径不是分支**。
-- **推进**：拖拽合法性 = **该 issue 当前可用的 transitions 里存在 `to.statusId` ∈ 目标列**，与列是否相邻无关。Story 只能到 In Code Review，Bug/Task 直达 In Test，Task/Sub-task 还能一步到 Done。单向（回退去 Jira）；不做复合跳转；列永远常驻。
+- **只读**：无拖拽、无 transition 表单、无软闸门（2026-11-07 放弃写回：transition 必填字段无法在看板里可靠完成）。改状态去 Jira；看板只负责展示阶段与深链。
 - **载体**：工作区 WebviewPanel（`createWebviewPanel`），活动栏图标作为入口；原侧边栏 TODO 面板与本地待办功能下线。
 
 ## Notes

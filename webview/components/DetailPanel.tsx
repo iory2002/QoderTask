@@ -22,6 +22,10 @@ export function DetailPanel({
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [card.key, onClose]);
 
+    // 卡片上展示的那个 MR（阶段最高；同阶段 merged_at 最新）
+    const cardMr = card.mrs.find((mr) => mr.isCardMr) ?? card.mrs[0];
+    const openExternal = (url: string) => post({ type: 'board:openExternal', payload: { url } });
+
     return (
         <>
             <div class="detail-backdrop" onClick={onClose} />
@@ -66,7 +70,9 @@ export function DetailPanel({
                         <div class="hint">
                             {card.stage === 'unknown'
                                 ? '取数失败，没有可展示的 MR 事实'
-                                : '标题、描述、源分支都没有关联到合入目标分支的 MR'}
+                                : card.codeWork === false
+                                  ? `该类型（${card.issueType}）通常不产出 MR，所以没有可展示的交付阶段`
+                                  : '标题、描述、源分支都没有关联到合入目标分支的 MR'}
                         </div>
                     ) : (
                         card.mrs.map((mr) => (
@@ -76,12 +82,13 @@ export function DetailPanel({
                                     <dd>
                                         <a
                                             href={mr.url}
+                                            title="在 GitLab 中打开这个 MR"
                                             onClick={(event) => {
                                                 event.preventDefault();
-                                                post({ type: 'board:openExternal', payload: { url: mr.url } });
+                                                openExternal(mr.url);
                                             }}
                                         >
-                                            !{mr.iid}
+                                            !{mr.iid} ↗
                                         </a>
                                         {mr.isCardMr ? ' · 卡片上展示的' : ''}
                                     </dd>
@@ -156,8 +163,6 @@ export function DetailPanel({
                             <dd>{card.assignee ?? '未指派'}</dd>
                             <dt>Epic</dt>
                             <dd>{card.epicLabel ? `${card.epicLabel}（${card.epicKey}）` : '无'}</dd>
-                            <dt>Rank</dt>
-                            <dd>{card.rank || '无'}</dd>
                         </dl>
                     </div>
                 </div>
@@ -168,6 +173,16 @@ export function DetailPanel({
                             头像与经办人只在「只看我的」关闭时显示
                         </span>
                     )}
+                    {cardMr ? (
+                        <button
+                            class="btn gitlab"
+                            title={`在 GitLab 中打开 ${cardMr.url}`}
+                            onClick={() => openExternal(cardMr.url)}
+                        >
+                            打开 GitLab MR !{cardMr.iid}
+                            {card.mrs.length > 1 ? `（另有 ${card.mrs.length - 1} 个）` : ''}
+                        </button>
+                    ) : null}
                     <button
                         class="btn primary"
                         onClick={() => post({ type: 'card:openJira', payload: { key: card.key } })}

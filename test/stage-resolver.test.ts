@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 
 import type { BuildFact, MrFact } from '../src/models/Board';
-import { pickCardMr, resolveStage } from '../src/services/DeliveryStageResolver';
+import { buildChecksApplyTo, pickCardMr, resolveStage } from '../src/services/DeliveryStageResolver';
 
 function mr(overrides: Partial<MrFact> & { iid: number }): MrFact {
     return {
@@ -183,4 +183,89 @@ test('a subtask with no MR inherits the parent stage', () => {
     assert.equal(result.stage, 'built');
     assert.equal(result.cardMr?.iid, 3769);
     assert.match(result.evidence[0], /继承父任务/);
+});
+
+// --- 构建校验按 issue 类型分化：Story / Bug 看构建，Task / Sub-task 不看 ---
+
+test('only Story and Bug are build-checked by default', () => {
+    assert.equal(buildChecksApplyTo('Story'), true);
+    assert.equal(buildChecksApplyTo('bug'), true);
+    assert.equal(buildChecksApplyTo('Task'), false);
+    assert.equal(buildChecksApplyTo('Sub-task'), false);
+    // 变体类型默认不包含，需要时通过 todoPanel.buildCheckIssueTypes 显式加入
+    assert.equal(buildChecksApplyTo('In-Sprint Bug'), false);
+});
+
+test('a Task tops out at merged even when a later successful build exists', () => {
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        buildChecked: false,
+        issueType: 'Task',
+        mrs: [mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT })],
+        builds: [build(245, '2026-11-06T14:00:00Z', 'SUCCESS')],
+    });
+    assert.equal(result.stage, 'merged');
+    assert.equal(result.build, undefined);
+    assert.equal(result.buildFailed, false);
+    assert.equal(result.buildChannel, 'merge-only');
+    assert.match(result.evidence.join('\n'), /不做构建校验/);
+});
+
+test('a Sub-task also tops out at merged', () => {
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        buildChecked: false,
+        issueType: 'Sub-task',
+        mrs: [mr({ iid: 1054, state: 'merged', mergedAt: MERGED_AT })],
+        builds: [build(245, '2026-11-06T14:00:00Z', 'SUCCESS')],
+    });
+    assert.equal(result.stage, 'merged');
+    assert.equal(result.buildChannel, 'merge-only');
+});
+
+test('a Story with Jenkins down is unknown, not merged', () => {
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildsOk: false,
+        buildChecked: true,
+        issueType: 'Story',
+        buildChannel: 'full',
+        mrs: [mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT })],
+        builds: [],
+    });
+    assert.equal(result.stage, 'unknown');
+    assert.match(result.evidence.join('\n'), /Jenkins 取数失败/);
+});
+
+test('a Task is unaffected by Jenkins being down', () => {
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildsOk: false,
+        buildChecked: false,
+        issueType: 'Task',
+        buildChannel: 'full',
+        mrs: [mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT })],
+        builds: [],
+    });
+    assert.equal(result.stage, 'merged');
+});
+
+test('Jenkins being down does not affect an unmerged card', () => {
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildsOk: false,
+        buildChecked: true,
+        issueType: 'Bug',
+        buildChannel: 'full',
+        mrs: [mr({ iid: 3773, approved: true, approvalsLeft: 0 })],
+        builds: [],
+    });
+    assert.equal(result.stage, 'approved');
 });

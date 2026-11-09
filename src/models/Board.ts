@@ -54,17 +54,30 @@ export interface BoardCard {
     issueType: string;
     priority: string | null;
     statusId: string;
+    /** Jira 状态名（如 In Code Review）。角标按状态名归类，列名不可靠 */
+    statusName: string;
     columnName: string;
     epicKey: string | null;
     epicLabel: string | null;
     /** LexoRank，字典序即 Jira 看板顺序 */
     rank: string;
     assignee: string | null;
+    /** 是否指派给当前用户（服务端算好，前端只做视图过滤） */
+    isMine: boolean;
+    /** 是否来自 extraIssueKeys 的钉住名单（dev 模式） */
+    pinned: boolean;
     isSubtask: boolean;
     parentKey?: string;
     commentCount: number;
     /** null = 该项目不追踪阶段，不出徽章 */
     stage: Stage | null;
+    /**
+     * 该类型是否算「写代码的工作」（Story / Bug）。
+     * false 时，若没有关联到 MR，不显示「未提交」——Task / Sub-task 本来就不产出 MR，
+     * 报「未提交」等于噪声；一旦真有 MR，阶段照常参与展示。
+     * 缺省（undefined）按 true 处理。
+     */
+    codeWork?: boolean;
     buildFailed: boolean;
     buildChannel: BuildChannel;
     /** 该 key 关联到的全部 MR，按阶段降序 */
@@ -88,7 +101,6 @@ export interface Freshness {
     /** 失败原因，人类可读 */
     error: string | null;
 }
-
 export type NoticeLevel = 'info' | 'warn' | 'error';
 
 export interface BoardNotice {
@@ -101,6 +113,8 @@ export interface BoardNotice {
 export interface BoardStatePayload {
     /** 数据指纹：未变化时 WebView 不重绘 */
     revision: string;
+    /** 首次加载尚未完成：为 true 时前端应显示骨架屏，不要把空列当成「读不到」 */
+    loading: boolean;
     columns: BoardColumn[];
     cards: BoardCard[];
     scope: BoardScope;
@@ -112,92 +126,6 @@ export interface BoardStatePayload {
     unmappedCount: number;
     /** 当前活跃 sprint 的名称，null = 没找到 */
     sprintName: string | null;
-    /** 写入中的卡片 key，轮询不得覆盖 */
-    pendingKeys: string[];
-}
-
-export interface ColumnStatusRef {
-    id: string;
-    name: string;
-}
-
-/** 一次 workflow transition 的可用目标 */
-export interface TransitionOption {
-    id: string;
-    name: string;
-    toStatusId: string;
-    toStatusName: string;
-}
-
-export type FieldKind = 'text' | 'textarea' | 'select' | 'multiselect' | 'user' | 'unsupported';
-
-export interface FieldOption {
-    id: string;
-    label: string;
-}
-
-/**
- * 表单字段。value 是按 issue 当前字段预填的展示值；
- * raw 是可直接回传 Jira 的原始形状（未改动时用）。
- */
-export interface TransitionField {
-    id: string;
-    name: string;
-    required: boolean;
-    kind: FieldKind;
-    /** 不支持的原始 schema 类型，用于在表单顶部说明原因 */
-    schemaType: string;
-    options: FieldOption[];
-    value: string | string[] | null;
-    raw: unknown;
-}
-
-export interface TransitionForm {
-    key: string;
-    /** 目标列 */
-    columnId: string;
-    columnName: string;
-    transition: TransitionOption;
-    fields: TransitionField[];
-    /** 无法渲染的字段名，非空时禁用提交 */
-    unsupportedFields: string[];
-    /** 字段类型不支持时的兜底入口 */
-    jiraUrl: string;
-}
-
-export interface TransitionWriteRequest {
-    key: string;
-    transitionId: string;
-    fields: Record<string, unknown>;
-}
-
-export interface TransitionResult {
-    key: string;
-    ok: boolean;
-    /** 整体失败原因（人话） */
-    error?: string;
-    /** 字段级错误：fieldId → 说明；直接回填到对应控件 */
-    fieldErrors?: Record<string, string>;
-}
-
-/** 单列的拖放合法性：拖拽开始时一次算完，拖到上面之前就能看出能不能放 */
-export interface ColumnDropRule {
-    columnId: string;
-    legal: boolean;
-    transitionId?: string;
-    transitionName?: string;
-    /** 不能放的原因（回退 / 没有直达动作 / 已在目标列） */
-    reason?: string;
-    /** 该 transition 需要填的表单（08 起使用） */
-    form?: TransitionForm;
-}
-
-export interface TransitionAvailability {
-    key: string;
-    jiraUrl: string;
-    /** 卡片当前所在列，null = 列外状态 */
-    currentColumnId: string | null;
-    drops: ColumnDropRule[];
 }
 
 export interface WebviewMessage {
@@ -206,20 +134,15 @@ export interface WebviewMessage {
     payload?: unknown;
 }
 
-/** WebView → 扩展 */
+/** WebView → 扩展。看板是只读的：改状态一律到 Jira 网页里做 */
 export type WebviewRequest =
     | { type: 'board:ready'; requestId?: string }
     | { type: 'board:refresh'; requestId?: string; payload?: { force?: boolean } }
     | { type: 'board:setScope'; requestId?: string; payload: BoardScope }
-    | { type: 'card:fetchTransitions'; requestId?: string; payload: { key: string } }
-    | { type: 'card:transition'; requestId?: string; payload: TransitionWriteRequest }
     | { type: 'card:openJira'; requestId?: string; payload: { key: string } }
     | { type: 'board:openExternal'; requestId?: string; payload: { url: string } };
 
 /** 扩展 → WebView */
 export type ExtensionResponse =
     | { type: 'board:state'; payload: BoardStatePayload }
-    | { type: 'card:transitions'; requestId?: string; payload: TransitionAvailability }
-    | { type: 'card:transitionForm'; requestId?: string; payload: TransitionForm }
-    | { type: 'card:transitionResult'; requestId?: string; payload: TransitionResult }
     | { type: 'board:error'; requestId?: string; payload: { message: string } };

@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 Write-Host "=== 清理旧版扩展，只保留 0.1.7 ===" -ForegroundColor Cyan
 
 $keepVersion = "0.1.7"

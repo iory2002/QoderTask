@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 
-import type { BoardScope, ExtensionResponse, TransitionWriteRequest, WebviewMessage } from '../models/Board';
+import type { BoardScope, ExtensionResponse, WebviewMessage } from '../models/Board';
 
 /**
  * 看板面板把「用户做了什么」交给外部的状态层处理。
@@ -11,8 +11,6 @@ export interface BoardPanelDelegate {
     onReady(panel: BoardPanel): void | Promise<void>;
     onRefresh(force: boolean): void | Promise<void>;
     onScopeChange(scope: BoardScope): void | Promise<void>;
-    onFetchTransitions(key: string): void | Promise<void>;
-    onTransition(request: TransitionWriteRequest): void | Promise<void>;
     onOpenJira(key: string): void | Promise<void>;
     onOpenExternal(url: string): void | Promise<void>;
     onVisibilityChanged(visible: boolean): void;
@@ -118,14 +116,6 @@ export class BoardPanel {
                     return;
                 case 'board:setScope':
                     await this.handlers.onScopeChange?.(message.payload as BoardScope);
-                    return;
-                case 'card:fetchTransitions': {
-                    const payload = message.payload as { key: string };
-                    await this.handlers.onFetchTransitions?.(payload.key);
-                    return;
-                }
-                case 'card:transition':
-                    await this.handlers.onTransition?.(message.payload as TransitionWriteRequest);
                     return;
                 case 'card:openJira':
                     await this.handlers.onOpenJira?.((message.payload as { key: string }).key);

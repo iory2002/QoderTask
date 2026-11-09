@@ -1,4 +1,4 @@
-# Jira Board extension installer: build, package, install.
+﻿# Jira Board extension installer: build, package, install.
 # Run from a normal terminal with QoderCN fully closed (Ctrl+Q) — the running
 # IDE locks ~/.qoder-cn/extensions and the CLI then fails with EPERM.
 $ErrorActionPreference = "Stop"
@@ -24,10 +24,15 @@ try {
     if (-not (Test-Path $vsix)) { throw "未生成 $vsix" }
 
     # 2) 安装：先试官方 CLI，失败则解压兜底
-    $cli = "C:\Program Files\QoderCN\bin\code.cmd"
+    # 机器上可能同时装新旧两个 IDE：新版在 "Qoder CN IDE"（带空格），旧版在 "QoderCN"
+    $cliCandidates = @(
+        "C:\Program Files\Qoder CN IDE\bin\code.cmd",
+        "C:\Program Files\QoderCN\bin\code.cmd"
+    )
+    $cli = $cliCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     $installed = $false
 
-    if (Test-Path $cli) {
+    if ($cli) {
         Write-Host "==> 通过 QoderCN CLI 安装" -ForegroundColor Cyan
         & $cli --install-extension $vsix --force
         $installed = $LASTEXITCODE -eq 0

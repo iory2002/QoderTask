@@ -8,24 +8,24 @@ import type {
     Freshness,
     MrFact,
     Stage,
-    TransitionWriteRequest,
 } from '../models/Board';
-import { JiraApiError, JiraService, type JiraIssue, type JiraSprint, type RawTransition } from '../services/JiraService';
-import { GitLabService, type GitLabApprovals } from '../services/GitLabService';
+import { JiraService, type JiraIssue, type JiraSprint } from '../services/JiraService';
+import { GitLabService, clearGitLabCaches, type GitLabApprovals } from '../services/GitLabService';
 import { JenkinsService } from '../services/JenkinsService';
 import { associateMrs, toMrFacts } from '../services/MrAssociation';
-import { resolveStage, type StageResult } from '../services/DeliveryStageResolver';
+import { countJiraBadges, type BadgeCounts } from '../services/BadgeCounter';
+import { buildChecksApplyTo, resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { BoardPanel } from './BoardPanel';
 import { ConfigError, describeError } from './errors';
-import { computeDropRules } from './dropRules';
-import { buildTransitionForm } from './transitionForm';
 import { revisionOf } from './fingerprint';
-import { readConfig, type BoardConfig, type RepoConfig } from './config';
+import { readBadgeConfig, readConfig, type BoardConfig, type RepoConfig } from './config';
 
 /** 一个 repo 条目取回来的事实 */
 interface RepoFacts {
-    /** GitLab 与（需要时）Jenkins 都取数成功才为 true */
-    ok: boolean;
+    /** GitLab 取数是否成功 */
+    gitlabOk: boolean;
+    /** Jenkins 取数是否成功；没发请求或不需要构建时为 true */
+    buildsOk: boolean;
     byKey: Map<string, MrFact[]>;
     builds: BuildFact[];
 }
@@ -61,20 +61,21 @@ export class BoardState {
     private stageNotices: BoardNotice[] = [];
     private lastPublishedRevision = '';
     private inFlight = false;
+    /** 首屏还没拿到数据：前端据此显示骨架屏而不是空看板 */
+    private loading = false;
     private disposed = false;
     private timer: ReturnType<typeof setTimeout> | undefined;
     private visible = false;
+    /** 角标要常驻：面板没打开也在跑（用更长的间隔） */
+    private started = false;
+    private badge: BadgeCounts = { primary: 0, secondary: 0 };
+    private onBadgeChange: ((counts: BadgeCounts) => void) | undefined;
     /** epic key → 标题，Epic chip 显示用；很少变，跨轮次缓存 */
     private readonly epicLabels = new Map<string, string>();
-    /** 最近一次拖拽拉到的 transitions：写入时按它校验并定位目标列，不跨交互复用 */
-    private lastInteraction: { key: string; transitions: RawTransition[] } | null = null;
-    /** 写入中的卡片：乐观移动后要顶住轮询，失败要能弹回 */
-    private readonly pending = new Map<
-        string,
-        { prevStatusId: string; prevColumnName: string; nextStatusId: string; nextColumnName: string }
-    >();
 
     private readonly jira = new JiraService();
+    /** 当前凭据对应的用户，用于本地「只看我的」过滤；拉一次就缓存 */
+    private viewer: { name: string; displayName: string } | null = null;
 
     constructor() {
         const config = readConfig();
@@ -92,6 +93,8 @@ export class BoardState {
             projects: (scope.projects ?? []).filter((project) => allowed.has(project)),
             onlyMine: scope.onlyMine !== false,
         };
+        // 纯视图切换：数据已经在内存里，直接重发一份状态即可，不重新拉全量
+        this.publish(true);
     }
 
     /** 上一轮没回来就不发下一轮；force 只影响「无变化也重发」 */
@@ -99,13 +102,34 @@ export class BoardState {
         if (this.inFlight || this.disposed) {
             return;
         }
+        if (force) {
+            // 手动刷新 / 面板刚打开：跳开共享缓存，拿最新的审批状态
+            clearGitLabCaches();
+        }
         this.inFlight = true;
+        this.loading = true;
+        if (this.freshness.lastSuccessAt === null) {
+            // 首次加载：先把「加载中」推过去，否则前端会先拿到一个 0 列 0 卡的空看板
+            this.publish(true);
+        }
         try {
             await this.load();
         } finally {
             this.inFlight = false;
+            this.loading = false;
             this.publish(force);
+            this.updateBadge();
         }
+    }
+
+    /** 角标口径与「只看我的」视图开关无关：切换过滤器不改数字 */
+    private updateBadge(): void {
+        const next = countJiraBadges(this.cards, readBadgeConfig().jira);
+        if (next.primary === this.badge.primary && next.secondary === this.badge.secondary) {
+            return;
+        }
+        this.badge = next;
+        this.onBadgeChange?.(next);
     }
 
     /** WebView 重建后必须能拿到当前状态：指纹没变时也要重发一次 */
@@ -114,7 +138,30 @@ export class BoardState {
     }
 
     /**
-     * tab 在后台就停表，回到前台立刻刷一次再重新排下一轮。
+     * 扩展激活就开表：活动栏角标必须在「没打开看板」时也有数字。
+     * 面板可见时用短间隔，不可见时降频（见 scheduleNext）。
+     */
+    public start(): void {
+        if (this.started || this.disposed) {
+            return;
+        }
+        this.started = true;
+        // 启动不用 force：两个看板同时开跑，共享缓存能把重复请求合成一次
+        void this.refresh(false).finally(() => this.scheduleNext());
+    }
+
+    public getBadgeCounts(): BadgeCounts {
+        return this.badge;
+    }
+
+    /** 先把当前值同步给订阅者：WebView 重建后角标不会空着 */
+    public setBadgeListener(listener: (counts: BadgeCounts) => void): void {
+        this.onBadgeChange = listener;
+        listener(this.badge);
+    }
+
+    /**
+     * tab 在后台就降频，回到前台立刻刷一次再重新排下一轮。
      * 用 setTimeout 递归而不是 setInterval：天然不会出现两轮重叠。
      */
     public setVisible(visible: boolean): void {
@@ -123,7 +170,7 @@ export class BoardState {
         }
         this.visible = visible;
         if (!visible) {
-            this.clearTimer();
+            this.scheduleNext();
             return;
         }
         void this.refresh(true).finally(() => this.scheduleNext());
@@ -131,10 +178,11 @@ export class BoardState {
 
     private scheduleNext(): void {
         this.clearTimer();
-        if (!this.visible || this.disposed) {
+        if (!this.started || this.disposed) {
             return;
         }
-        const intervalMs = readConfig().pollIntervalSec * 1000;
+        const intervalMs =
+            (this.visible ? readConfig().pollIntervalSec : readBadgeConfig().jira.pollIntervalSec) * 1000;
         this.timer = setTimeout(() => {
             void this.refresh(false).finally(() => this.scheduleNext());
         }, intervalMs);
@@ -167,9 +215,13 @@ export class BoardState {
             this.rankField = boardConfig.rankField;
             this.sprint = await this.jira.getActiveSprint(config.boardId);
 
+            // 身份用于本地过滤「只看我的」；拉一次就缓存，不每轮都问
+            if (!this.viewer) {
+                this.viewer = await this.jira.getMyself();
+            }
+
             this.cards = this.sprint ? await this.fetchCards(this.sprint) : [];
             await this.applyStages(this.cards, config);
-            this.reapplyPending();
 
             console.log(
                 `[jira-board] board ${config.boardId} 列定义：` +
@@ -195,18 +247,26 @@ export class BoardState {
 
     private async fetchCards(sprint: JiraSprint): Promise<BoardCard[]> {
         const config = readConfig();
-        if (config.projects.length === 0) {
+        // 钉住的 issue 只属于验收手段：dev 开关关闭时不参与查询
+        const pinned = config.devMode ? config.extraIssueKeys : [];
+        if (config.projects.length === 0 && pinned.length === 0) {
             return [];
         }
 
-        const jql = this.buildJql(sprint, config.projects);
+        // 「只看我的」不再进 JQL：全量拉一次，前端按 isMine 切视图
+        const jql = this.buildJql(sprint, config.projects, pinned);
         const fields = [...ISSUE_FIELDS, this.rankField];
         const result = await this.jira.search(jql, fields);
         const epics = await this.resolveEpicLabels(result.issues);
+        const pinnedSet = new Set(pinned);
 
         const cards = result.issues
             .filter((issue) => (issue.fields.issuetype?.name ?? '') !== 'Epic')
-            .map((issue) => this.toCard(issue, epics));
+            .map((issue) => {
+                const card = this.toCard(issue, epics);
+                card.pinned = pinnedSet.has(card.key);
+                return card;
+            });
 
         return cards.sort((left, right) => {
             if (left.rank === right.rank) {
@@ -222,16 +282,25 @@ export class BoardState {
         });
     }
 
-    private buildJql(sprint: JiraSprint, projects: string[]): string {
-        const clauses = [
-            `sprint = ${sprint.id}`,
-            `project IN (${projects.join(', ')})`,
-            'issuetype != Epic',
-        ];
-        if (this.scope.onlyMine) {
-            clauses.push('assignee = currentUser()');
+    private buildJql(sprint: JiraSprint, projects: string[], extraKeys: string[]): string {
+        const parts: string[] = [];
+
+        if (projects.length > 0) {
+            const clauses = [
+                `sprint = ${sprint.id}`,
+                `project IN (${projects.join(', ')})`,
+                'issuetype != Epic',
+            ];
+            // 注意：「只看我的」不进 JQL——全量拉取，前端按 isMine 过滤，切开关不发请求
+            parts.push(`(${clauses.join(' AND ')})`);
         }
-        return `${clauses.join(' AND ')} ORDER BY Rank ASC`;
+
+        if (extraKeys.length > 0) {
+            // 钉住的 issue 不受 sprint / assignee / 项目白名单限制：显式钉了就是要看
+            parts.push(`key IN (${extraKeys.join(', ')})`);
+        }
+
+        return `${parts.join(' OR ')} ORDER BY Rank ASC`;
     }
 
     /** Epic Link 是自定义字段（本环境 10000，兜底 10014），值为 key 字符串 */
@@ -287,11 +356,14 @@ export class BoardState {
             issueType,
             priority: fields.priority?.name ?? null,
             statusId,
+            statusName: fields.status?.name ?? '',
             columnName: column?.name ?? '',
             epicKey,
             epicLabel: epicKey ? epics.get(epicKey) ?? epicKey : null,
             rank: String(fields[this.rankField] ?? ''),
             assignee: fields.assignee?.displayName ?? null,
+            isMine: this.viewer !== null && String(fields.assignee?.name ?? '') === this.viewer.name,
+            pinned: false,
             isSubtask: fields.issuetype?.subtask === true || issueType.toLowerCase() === 'sub-task',
             parentKey: fields.parent?.key,
             commentCount: fields.comment?.total ?? 0,
@@ -313,7 +385,9 @@ export class BoardState {
         const repoByProject = new Map<string, RepoConfig>();
         for (const repo of config.repos) {
             for (const project of repo.jiraProjects) {
-                repoByProject.set(project, repo);
+                if (config.projects.includes(project)) {
+                    repoByProject.set(project, repo);
+                }
             }
         }
         if (repoByProject.size === 0) {
@@ -336,25 +410,38 @@ export class BoardState {
             // 同一个仓库 + 目标分支只拉一次，多个 Jira 项目可以共享
             const groups = new Map<string, { repo: RepoConfig; projects: string[] }>();
             for (const repo of config.repos) {
+                // 白名单外的项目不发请求：映射可以留着，但范围收窄后不该再去拉它的 MR
+                const projects = repo.jiraProjects.filter((project) => config.projects.includes(project));
+                if (projects.length === 0) {
+                    continue;
+                }
                 const id = `${repo.gitlabProject}@${repo.targetBranch}`;
                 const group = groups.get(id);
                 if (group) {
-                    group.projects.push(...repo.jiraProjects);
+                    group.projects.push(...projects);
                 } else {
-                    groups.set(id, { repo, projects: [...repo.jiraProjects] });
+                    groups.set(id, { repo, projects });
                 }
             }
 
             for (const [id, group] of groups) {
                 if (!group.repo.gitlabProject) {
-                    factsByRepo.set(id, { ok: false, byKey: new Map(), builds: [] });
+                    factsByRepo.set(id, { gitlabOk: false, buildsOk: true, byKey: new Map(), builds: [] });
                     continue;
                 }
 
                 // 构建是独立的一跳：GitLab 成功但 Jenkins 取不到数，阶段仍然无法判定
                 let builds: BuildFact[] = [];
                 let buildsOk = true;
-                if (group.repo.jenkinsJobPath) {
+                // Task / Sub-task 不看构建；该仓库下没有任何需要构建校验的卡时，连请求都不发
+                const needsBuilds =
+                    group.repo.jenkinsJobPath !== null &&
+                    cards.some(
+                        (card) =>
+                            group.projects.includes(card.project) &&
+                            buildChecksApplyTo(card.issueType, config.buildCheckIssueTypes)
+                    );
+                if (group.repo.jenkinsJobPath && needsBuilds) {
                     try {
                         if (!jenkinsConfigured) {
                             throw new ConfigError(
@@ -373,15 +460,21 @@ export class BoardState {
                         this.stageNotices.push({
                             level: 'error',
                             message: `Jenkins 取数失败（${group.repo.targetBranch}）：${described.message}`,
-                            hint: described.hint ?? '检查 todoPanel.repos[].jenkinsJobPath 与 jenkins.token',
+                            hint: described.hint ?? '检查 pcBoard.repos[].jenkinsJobPath 与 jenkins.token',
                         });
                     }
                 }
 
                 try {
                     const mrs = await gitlab.listTargetBranchMrs(group.repo.gitlabProject, group.repo.targetBranch);
-                    const approvals = await this.fetchApprovals(gitlab, group.repo.gitlabProject, mrs);
                     const byKey = associateMrs(mrs, group.projects);
+                    // 只给「当前看板卡片关联到的 MR」查审批：90 天窗口里的 opened MR
+                    // 大多数与这个 sprint 无关，全查等于几十个串行的 /approvals。
+                    const cardKeys = new Set(cards.map((card) => card.key));
+                    const relevant = [...byKey.entries()]
+                        .filter((entry) => cardKeys.has(entry[0]))
+                        .flatMap((entry) => entry[1].map((associated) => associated.mr));
+                    const approvals = await this.fetchApprovals(gitlab, group.repo.gitlabProject, relevant);
                     const facts = new Map<string, MrFact[]>();
                     for (const [key, associated] of byKey) {
                         facts.set(
@@ -404,15 +497,15 @@ export class BoardState {
                             })
                         );
                     }
-                    factsByRepo.set(id, { ok: buildsOk, byKey: facts, builds });
+                    factsByRepo.set(id, { gitlabOk: true, buildsOk, byKey: facts, builds });
                 } catch (error) {
                     const described = describeError(error);
                     console.warn(`[jira-board] ${group.repo.gitlabProject}@${group.repo.targetBranch} 取数失败`, error);
-                    factsByRepo.set(id, { ok: false, byKey: new Map(), builds });
+                    factsByRepo.set(id, { gitlabOk: false, buildsOk, byKey: new Map(), builds });
                     this.stageNotices.push({
                         level: 'error',
                         message: `GitLab 取数失败（${group.repo.gitlabProject} → ${group.repo.targetBranch}）：${described.message}`,
-                        hint: described.hint ?? '检查 todoPanel.repos 的 gitlabProject / targetBranch 与 gitlab.token',
+                        hint: described.hint ?? '检查 pcBoard.repos 的 gitlabProject / targetBranch 与 gitlab.token',
                     });
                 }
             }
@@ -420,12 +513,23 @@ export class BoardState {
 
         const resolved = new Map<string, StageResult>();
 
+        // 类型决定它算不算「写代码的工作」：Task / Sub-task 没有 MR 时不报「未提交」
+        for (const card of cards) {
+            card.codeWork = buildChecksApplyTo(card.issueType, config.buildCheckIssueTypes);
+        }
+
         // 第一遍：非子任务
         for (const card of cards) {
             if (card.isSubtask) {
                 continue;
             }
-            const { result, mrs } = this.resolveCardStage(card, repoByProject, factsByRepo, configured);
+            const { result, mrs } = this.resolveCardStage(
+                card,
+                repoByProject,
+                factsByRepo,
+                configured,
+                config.buildCheckIssueTypes
+            );
             resolved.set(card.key, result);
             this.applyResult(card, result, mrs);
         }
@@ -455,7 +559,14 @@ export class BoardState {
                   }
                 : undefined;
 
-            const { result, mrs } = this.resolveCardStage(card, repoByProject, factsByRepo, configured, inherited);
+            const { result, mrs } = this.resolveCardStage(
+                card,
+                repoByProject,
+                factsByRepo,
+                configured,
+                config.buildCheckIssueTypes,
+                inherited
+            );
             resolved.set(card.key, result);
             this.applyResult(card, result, mrs);
         }
@@ -479,6 +590,7 @@ export class BoardState {
         repoByProject: Map<string, RepoConfig>,
         factsByRepo: Map<string, RepoFacts>,
         gitlabConfigured: boolean,
+        buildCheckTypes: string[],
         inherited?: { stage: Stage; buildFailed: boolean; evidence: string[]; mr?: MrFact; build?: StageResult['build'] }
     ): { result: StageResult; mrs: MrFact[] } {
         const repo = repoByProject.get(card.project);
@@ -497,7 +609,10 @@ export class BoardState {
         return {
             result: resolveStage({
                 tracked: true,
-                dataOk: gitlabConfigured && (repoFacts?.ok ?? false),
+                dataOk: gitlabConfigured && (repoFacts?.gitlabOk ?? false),
+                buildsOk: repoFacts?.buildsOk ?? true,
+                buildChecked: buildChecksApplyTo(card.issueType, buildCheckTypes),
+                issueType: card.issueType,
                 buildChannel,
                 mrs,
                 builds: repoFacts?.builds ?? [],
@@ -524,84 +639,24 @@ export class BoardState {
             notices.push({
                 level: 'warn',
                 message: '项目白名单为空，看板不会显示任何卡片',
-                hint: '设置 todoPanel.projects',
+                hint: '设置 pcBoard.projects',
             });
         }
-        if (!this.sprint) {
+        if (!this.sprint && this.freshness.lastSuccessAt !== null) {
             notices.push({
                 level: 'warn',
                 message: '没有找到活跃 sprint，看板暂时为空',
-                hint: `检查 todoPanel.boardId（当前 ${config.boardId}）在 Jira 上是否有进行中的 sprint`,
+                hint: `检查 pcBoard.boardId（当前 ${config.boardId}）在 Jira 上是否有进行中的 sprint`,
             });
         }
         if (config.repos.length === 0) {
             notices.push({
                 level: 'info',
                 message: '没有配置仓库映射，所有卡片都不显示交付阶段',
-                hint: '设置 todoPanel.repos 才能追踪 GitLab / Jenkins',
+                hint: '设置 pcBoard.repos 才能追踪 GitLab / Jenkins',
             });
         }
         return notices;
-    }
-
-    /**
-     * 拖拽合法性：每次拖拽都重新拉 transitions，不跨交互复用。
-     * 合法 = 该 issue 当前可用的某个 transition 的 to.statusId 命中目标列，与列相邻与否无关。
-     */
-    public async fetchTransitions(key: string): Promise<void> {
-        const card = this.cards.find((candidate) => candidate.key === key);
-        if (!card) {
-            throw new Error(`卡片 ${key} 不在当前看板上，先刷新一次`);
-        }
-
-        const transitions = await this.jira.getTransitions(key);
-        this.lastInteraction = { key, transitions };
-        const drops = computeDropRules({
-            columns: this.columns,
-            currentStatusId: card.statusId,
-            transitions: transitions.map((transition) => ({
-                id: transition.id,
-                name: transition.name,
-                toStatusId: String(transition.to?.id ?? ''),
-            })),
-        });
-        const currentIndex = this.columns.findIndex((column) => column.statusIds.includes(card.statusId));
-
-        // 只有合法落点才需要表单；顺带把 issue 当前字段读回来做预填
-        const legalDrops = drops.filter((drop) => drop.legal);
-        if (legalDrops.length > 0) {
-            const issue = await this.jira.getIssue(key);
-            for (const drop of legalDrops) {
-                const transition = transitions.find((candidate) => candidate.id === drop.transitionId);
-                const column = this.columns.find((candidate) => candidate.id === drop.columnId);
-                if (!transition || !column) {
-                    continue;
-                }
-                drop.form = buildTransitionForm({
-                    key,
-                    column,
-                    transition: {
-                        id: transition.id,
-                        name: transition.name,
-                        toStatusId: String(transition.to?.id ?? ''),
-                        toStatusName: transition.to?.name ?? '',
-                    },
-                    fieldsMeta: transition.fields,
-                    issueFields: issue.fields ?? {},
-                    jiraUrl: this.jira.browseUrl(key),
-                });
-            }
-        }
-
-        BoardPanel.post({
-            type: 'card:transitions',
-            payload: {
-                key,
-                jiraUrl: this.jira.browseUrl(key),
-                currentColumnId: currentIndex >= 0 ? this.columns[currentIndex].id : null,
-                drops,
-            },
-        });
     }
 
     private publish(force = false): void {
@@ -616,92 +671,6 @@ export class BoardState {
         BoardPanel.post({ type: 'board:state', payload });
     }
 
-    /**
-     * 单卡单次写入。只允许用最近一次拖拽拿到的 transition，
-     * 否则说明用户看到的动作已经过期，宁可让他重新拖一次。
-     */
-    public async transition(request: TransitionWriteRequest): Promise<void> {
-        const card = this.cards.find((candidate) => candidate.key === request.key);
-        const interaction = this.lastInteraction?.key === request.key ? this.lastInteraction : null;
-        const transition = interaction?.transitions.find((candidate) => candidate.id === request.transitionId);
-
-        if (!card || !transition) {
-            BoardPanel.post({
-                type: 'card:transitionResult',
-                payload: {
-                    key: request.key,
-                    ok: false,
-                    error: '这张卡可用的动作已经过期，请重新拖一次',
-                },
-            });
-            return;
-        }
-
-        try {
-            // 乐观移动：先让卡片进目标列并带上「提交中」，再等 Jira 回话
-            const toStatusId = String(transition.to?.id ?? '');
-            const targetColumn = this.columns.find((candidate) => candidate.statusIds.includes(toStatusId));
-            this.pending.set(request.key, {
-                prevStatusId: card.statusId,
-                prevColumnName: card.columnName,
-                nextStatusId: toStatusId,
-                nextColumnName: targetColumn?.name ?? card.columnName,
-            });
-            this.reapplyPending();
-            this.publish();
-
-            await this.jira.transition(request.key, request.transitionId, request.fields);
-
-            // await 期间轮询可能整体替换了 this.cards，必须按 key 重新取
-            this.pending.delete(request.key);
-            const live = this.cards.find((candidate) => candidate.key === request.key) ?? card;
-            live.statusId = toStatusId;
-            live.columnName = targetColumn?.name ?? live.columnName;
-            this.lastInteraction = null;
-
-            BoardPanel.post({ type: 'card:transitionResult', payload: { key: request.key, ok: true } });
-            this.publish();
-            void this.refresh(true);
-        } catch (error) {
-            const pending = this.pending.get(request.key);
-            this.pending.delete(request.key);
-            if (pending) {
-                const live = this.cards.find((candidate) => candidate.key === request.key) ?? card;
-                live.statusId = pending.prevStatusId;
-                live.columnName = pending.prevColumnName;
-            }
-            this.publish(true);
-
-            const described = describeError(error);
-            const fieldErrors = error instanceof JiraApiError ? error.fieldErrors : undefined;
-            const hasFieldErrors = fieldErrors !== undefined && Object.keys(fieldErrors).length > 0;
-
-            BoardPanel.post({
-                type: 'card:transitionResult',
-                payload: {
-                    key: request.key,
-                    ok: false,
-                    error: hasFieldErrors ? 'Jira 拒绝了这个请求，请按字段旁的提示修改' : described.message,
-                    fieldErrors: hasFieldErrors ? fieldErrors : undefined,
-                },
-            });
-        }
-    }
-
-    /** 轮询拿回来的数据不得覆盖正在写入的卡片 */
-    private reapplyPending(): void {
-        if (this.pending.size === 0) {
-            return;
-        }
-        for (const card of this.cards) {
-            const entry = this.pending.get(card.key);
-            if (entry) {
-                card.statusId = entry.nextStatusId;
-                card.columnName = entry.nextColumnName;
-            }
-        }
-    }
-
     private buildPayload(): BoardStatePayload {
         const config = readConfig();
         const signature = revisionOf({
@@ -712,13 +681,14 @@ export class BoardState {
             notices: this.notices,
             stale: this.freshness.stale,
             error: this.freshness.error,
-            pending: [...this.pending.keys()],
+            loading: this.loading,
             // 同步时间按分钟入指纹：数据没变也会更新「同步于 hh:mm」，但不会每轮都重绘
             syncedMinute: this.freshness.lastSuccessAt === null ? null : Math.floor(this.freshness.lastSuccessAt / 60000),
         });
 
         return {
             revision: signature,
+            loading: this.loading,
             columns: this.columns,
             cards: this.cards,
             scope: this.scope,
@@ -727,7 +697,6 @@ export class BoardState {
             notices: this.notices,
             unmappedCount: this.unmappedCount(),
             sprintName: this.sprint?.name ?? null,
-            pendingKeys: [...this.pending.keys()],
         };
     }
 

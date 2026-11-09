@@ -22,3 +22,8 @@
 - 审批人只对 `opened` 的 MR 展示，`merged` 的 MR 明确写「未查（只对 opened 的 MR 查审批）」——避免让人以为没审批记录。
 - 不抢焦点：浮层只在打开时读一次 `selectedKey`，之后按 key 从 state 里取新数据；不 autofocus、不滚动、不重设选中。
 - 「在 Jira 中打开」走 `card:openJira` → `vscode.env.openExternal`；MR / 构建链接走 `board:openExternal`，同样只允许 http(s)。
+- **MR 打开入口补强**（用户反馈："在 Jira 中打开不够"）：原实现只在 MR 列表里把 `!3720` 做成小链接，不像个功能。现在：
+  - 浮层底部在「在 Jira 中打开」**之前**加显式按钮「打开 GitLab MR !n」，指向卡片上展示的那个 MR（`isCardMr`，无则取第一个）；多 MR 时文案带「（另有 N 个）」。
+  - MR 列表里的 `!iid` 改成 `!iid ↗` 并补 `title`，看得出是可点的外部链接。
+  - 仍然全部走 `board:openExternal`，不在 IDE 内跳转。
+- 0.3.1 打包验证：`todo-panel-0.3.1.vsix`（31 files / 72.11 KB），`media/board.js` 33.68 KB。

@@ -12,7 +12,9 @@ Ladder, in order:
 2. **MR awaiting review** (`MR 待审`) — an associated MR exists and is open, with no approval yet.
 3. **Approved, not merged** (`已 Approve 待合入`) — an associated MR is open and carries at least one approval.
 4. **Merged, awaiting build** (`已合入待构建`) — an associated MR was merged into the target branch, but no build of that merge has passed yet.
-5. **Built** (`已构建`) — a successful build exists for that merge.
+5. **Built** (`已构建`) — the latest successful build whose code tree **contains** that merge. Containment is a fact about commit ancestry, never about timestamps: a merge is inside a build when the build's commit has the merge as an ancestor. A failed or still-running build proves nothing. Attribution is deliberately to the latest success rather than the first one that carried it, so the answer cannot drift as the branch is rebuilt.
+
+The claim is about source, not artefacts: `Built` means the change was in the tree a build ran on. It never means a given installer or release contains it — the artefact comes from the tree at build start, while the build's recorded commit may come from a later checkout of the same build.
 
 The ladder is ordered by reached-ness, not by completeness: skipping a rung (merged without review) advances the stage rather than blocking it.
 
@@ -51,3 +53,39 @@ A Jira status that belongs to no board column. Issues in such a status have no c
 ## Transition form
 
 The required-fields screen Jira demands before a workflow transition may execute. Rendered from the transitions metadata of the specific issue; must be filled before the write is sent.
+
+## MR Board
+
+The second board in PC Board: a read-only view of merge requests organised by who owes the next action — me as reviewer, or me as author. It is not a smaller Jira Board: an issue can own several MRs and an MR can serve several issues, so the MR Board never groups by issue.
+
+## Review Queue
+
+The merge requests whose reviewers include me and which I have not yet approved. Membership is decided by my own approval record, not by the MR's overall approved state — a merge request can be fully approved by others and still sit in my queue.
+
+## My MRs
+
+Merge requests I authored. Author is the only criterion; being assigned to an MR I did not write does not put it here.
+
+## Review State
+
+Whether a merge request has been looked at by someone other than its author: awaiting me, unreviewed, reviewed by N people, or unknown. Unknown means the approval source could not be read; it never means unreviewed.
+
+## MR Board scope
+
+The set of repository and target-branch pairs the MR Board draws from. Independent of the Jira Board's repo mapping: widening one never widens the other.
+
+## Review Handoff
+
+Carrying a merge request out of the board and into a review session: the MR's diff is materialised as a local artifact and a review instruction is put on the clipboard. The board does not open or seed the session itself — that step belongs to the person.
+
+## Draft MR
+
+A merge request explicitly marked work in progress. Outside the MR Board's scope entirely: a draft is neither queued nor counted.
+
+## Fact Store
+
+The local database shared by every IDE window on one machine. It holds only **facts** — values the servers stamped themselves (a merge time, a build result, an approval) — never derived conclusions such as a Delivery Stage or a badge count, which are recomputed from facts on demand. Two windows reading the same store must therefore never disagree about what happened, only about how fresh it is.
+
+## Fetch stamp
+
+A per-scope record in the Fact Store saying when that scope was last read successfully, and whether some window is reading it right now. There is deliberately no leader window: whoever finds a scope stale and unclaimed refreshes it, so the cadence is set by whichever window looks most often, and a crashed window needs no takeover — its claim simply expires.

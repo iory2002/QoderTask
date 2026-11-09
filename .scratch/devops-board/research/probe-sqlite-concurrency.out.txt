@@ -1,0 +1,6 @@
+bench: 500 rows in one txn = 1ms∩╝¢50 rows autocommit = 0ms∩╝¢COUNT(*) = 550 in 0ms
+leader: write lock held at +0ms, sleeping 3000ms
+leader: committed at +3021ms
+follower: read OK at +0ms value=null
+follower: write OK after 2120ms
+parent: final rows=552

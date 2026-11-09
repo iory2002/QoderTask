@@ -1,9 +1,13 @@
 /**
- * 编译前清空 out/：tsc 不会删除已失效的产物，
- * 上一次编译留下的旧文件会被一起打进 vsix（等于死代码仍在发布）。
+ * 编译前清空产物目录。
+ *
+ * tsc 只覆盖、不删除：删掉的模块会以旧的 .js 留在产物里，
+ * 结果就是「源码已经去掉的功能，vsix 里还在」——
+ * 之前退役侧边栏时踩过一次（out/），删测试文件时又踩了一次（.test-out/）。
  */
 const fs = require('fs');
 const path = require('path');
 
-const target = path.join(__dirname, '..', 'out');
-fs.rmSync(target, { recursive: true, force: true });
+for (const name of ['out', '.test-out']) {
+    fs.rmSync(path.join(__dirname, '..', name), { recursive: true, force: true });
+}

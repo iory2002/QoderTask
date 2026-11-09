@@ -22,3 +22,8 @@
 - 视觉：拖拽开始后，非法列立刻加 `.locked`（整体降透明），鼠标悬停时合法列绿框（`.dragover`）、非法列红虚线（`.reject`）。非法列也 `preventDefault` 接收 drop，这样用户能拿到原因而不是"什么也没发生"。
 - 原因文案三种：`卡片已经在这一列`、`看板不支持回退：需要回退请到 Jira 网页操作`、`没有直达「In Test」的动作；当前可去：In Code Review`。
 - 本阶段合法落点只弹一条 toast（`可以推到「In Test」（Jira 动作：Send to Test）。这一步还不能写回 Jira。`），卡片不动；08 号票把这个分支换成表单。
+
+## Superseded（2026-11-07）
+
+放弃写回：Jira 的 transition 绝大多数带必填字段（screen），看板里无法可靠填写。本票交付的拖拽 / 表单 / 闸门代码已整体删除（含 dropRules / transitionForm / softGate 与对应单测），看板改为只读 + 深链。
+

@@ -1,0 +1,40 @@
+/*
+ * GitLab Board 的增量样式。基础骨架（顶栏、列、卡片、浮层、横幅、骨架屏）
+ * 全部复用 board.css；这里只补 MR 特有的元素。
+ */
+
+#mr-board-root { height: 100vh; display: flex; flex-direction: column; min-height: 0; }
+
+/* ---------- 顶栏 scope ---------- */
+.mr-scope { display: flex; gap: 6px; flex-wrap: wrap; }
+.scope-chip {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+}
+
+/* ---------- 卡片 ---------- */
+.mr-card .row1 { gap: 8px; }
+.mr-card .title { -webkit-line-clamp: 3; }
+.mr-iid { font-weight: 600; font-size: 12px; color: #1c7ed6; }
+.mr-repo { font-size: 11px; color: var(--muted); }
+.mr-updated { margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.mr-person { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.mr-key { font-size: 11px; margin-left: 2px; }
+
+/* 徽章沿用 .stage 的配色；这里只保证「审批未知」的虚线边框足够显眼 */
+.mr-card .stage { white-space: nowrap; }
+
+/* ---------- 右键菜单 ---------- */
+.ctx-menu {
+  position: fixed; z-index: 60;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px; box-shadow: 0 8px 26px rgba(0, 0, 0, .18);
+}
+.ctx-item {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 0; border-radius: 4px;
+  padding: 6px 10px; font: inherit; font-size: 12px; color: var(--fg); cursor: pointer;
+}
+.ctx-item:hover:not(.disabled) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ctx-item.disabled { opacity: .45; cursor: not-allowed; }
+.ctx-sep { height: 1px; background: var(--line); margin: 4px 2px; }

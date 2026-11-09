@@ -25,3 +25,8 @@ install*.bat
 share-prep-2026-09-11.md
 AGENTS.md
 GLOSSARY.md
+debug.log
+fix-webview-cache.*
+run-qodercn.cmd
+*.vsix
+package-lock.json

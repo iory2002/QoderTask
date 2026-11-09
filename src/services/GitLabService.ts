@@ -1,6 +1,8 @@
 import * as https from 'https';
 import * as http from 'http';
+import type { MrPerson } from '../models/MrBoard';
 import { loadScrumBuddyConfig } from './ScrumBuddyConfig';
+import { createIntranetHttpsAgent, intranetTlsOptions } from './intranetTls';
 
 /**
  * ScrumBuddy 配置中的 GitLab 部分
@@ -11,6 +13,12 @@ interface ScrumBuddyGitLabConfig {
 }
 
 /** 列表接口的原始行（字段名是 GitLab 的 snake_case） */
+interface RawGitLabUser {
+    id?: number;
+    name?: string;
+    username?: string;
+}
+
 interface RawGitLabMr {
     iid: number;
     state: string;
@@ -22,6 +30,11 @@ interface RawGitLabMr {
     merge_commit_sha?: string | null;
     web_url: string;
     updated_at: string;
+    created_at?: string;
+    author?: RawGitLabUser;
+    reviewers?: RawGitLabUser[];
+    draft?: boolean;
+    work_in_progress?: boolean;
 }
 
 /** 只读通道里的 MR 事实 */
@@ -41,7 +54,63 @@ export interface GitLabMr {
 export interface GitLabApprovals {
     approved: boolean;
     approvalsLeft: number | null;
+    /** 人名，保留给 Jira 看板的阶段推导依据展示 */
     approvedBy: string[];
+    /** 审批人 id：判断「我批过没有」必须用 id，名字不可靠 */
+    approvedByIds: number[];
+    /** 审批人完整信息，MR Board 的浮层展示用 */
+    approvedByPeople: MrPerson[];
+}
+
+export interface GitLabUser {
+    id: number;
+    username: string;
+    name: string;
+}
+
+/** MR Board 取数用的一行事实（带作者与 reviewer，与交付阶段那套分开） */
+export interface GitLabMrRow {
+    projectPath: string;
+    iid: number;
+    title: string;
+    description: string;
+    url: string;
+    state: string;
+    sourceBranch: string;
+    targetBranch: string;
+    author: MrPerson;
+    reviewerIds: number[];
+    draft: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+function personOf(raw: RawGitLabUser | undefined): MrPerson {
+    return {
+        id: Number(raw?.id ?? 0),
+        name: raw?.name ?? raw?.username ?? '',
+        username: raw?.username ?? '',
+    };
+}
+
+/**
+ * 进程内共享缓存。
+ *
+ * Jira 看板与 MR 看板各自 new GitLabService()，但打的是同一台 GitLab：
+ * 同一批 MR 的 /approvals 会被两边各查一次。缓存放模块级才能两边共用；
+ * 缓存的是 Promise，所以并发的重复请求也会合成一次。
+ *
+ * TTL 故意短于轮询间隔（60s）：缓存只为合并「同一时刻」的重复请求，
+ * 不能跨轮命中，否则每两轮才有一次真正更新。
+ */
+const CACHE_TTL_MS = 15_000;
+const listCache = new Map<string, { at: number; promise: Promise<GitLabMr[]> }>();
+const approvalsCache = new Map<string, { at: number; promise: Promise<GitLabApprovals | undefined> }>();
+
+/** 用户手动刷新时清掉，别让「刷新」拿到一分钟前的缓存 */
+export function clearGitLabCaches(): void {
+    listCache.clear();
+    approvalsCache.clear();
 }
 
 export class GitLabApiError extends Error {
@@ -62,7 +131,7 @@ export class GitLabApiError extends Error {
             return 'GitLab 拒绝访问：token 权限不足（~/.scrumbuddy/config.json 的 gitlab.token）';
         }
         if (this.status === 404) {
-            return 'GitLab 项目或接口不存在：检查 todoPanel.repos 里的 gitlabProject 与 targetBranch';
+            return 'GitLab 项目或接口不存在：检查 pcBoard.repos 里的 gitlabProject 与 targetBranch';
         }
         if (this.status >= 500) {
             return `GitLab 服务端错误 ${this.status}，稍后重试`;
@@ -77,8 +146,12 @@ export class GitLabApiError extends Error {
  */
 export class GitLabService {
     private config: ScrumBuddyGitLabConfig | null = null;
+    /** 配置签名：baseUrl / token 变了就作废用户缓存与共享缓存 */
+    private configSignature = '';
+    /** /user 的会话内缓存；token 变了就作废 */
+    private userCache: GitLabUser | null = null;
     // 允许自签名证书（企业内部环境常见）
-    private httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    private httpsAgent = createIntranetHttpsAgent();
 
     constructor() {
         this.reloadConfig();
@@ -89,7 +162,14 @@ export class GitLabService {
      */
     public reloadConfig(): void {
         const full = loadScrumBuddyConfig();
-        this.config = full?.gitlab ?? null;
+        const next = full?.gitlab ?? null;
+        const signature = `${next?.baseUrl ?? ''}|${next?.token ?? ''}`;
+        if (this.configSignature !== signature) {
+            this.userCache = null;
+            clearGitLabCaches();
+            this.configSignature = signature;
+        }
+        this.config = next;
     }
 
     public isConfigured(): boolean {
@@ -106,6 +186,31 @@ export class GitLabService {
         project: string,
         targetBranch: string,
         updatedAfterDays = 90
+    ): Promise<GitLabMr[]> {
+        const key = `${project}@${targetBranch}@${updatedAfterDays}`;
+        const cached = listCache.get(key);
+        if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+            // 缓存 Promise：第二个并发调用不会再发一次请求
+            return cached.promise;
+        }
+
+        const promise = this.fetchTargetBranchMrs(project, targetBranch, updatedAfterDays);
+        listCache.set(key, { at: Date.now(), promise });
+        try {
+            return await promise;
+        } catch (error) {
+            // 失败不留在缓存里，下一轮要能重试
+            if (listCache.get(key)?.promise === promise) {
+                listCache.delete(key);
+            }
+            throw error;
+        }
+    }
+
+    private async fetchTargetBranchMrs(
+        project: string,
+        targetBranch: string,
+        updatedAfterDays: number
     ): Promise<GitLabMr[]> {
         const updatedAfter = new Date(Date.now() - updatedAfterDays * 24 * 3600 * 1000).toISOString();
         const rows: RawGitLabMr[] = [];
@@ -140,6 +245,106 @@ export class GitLabService {
         }));
     }
 
+    /** 当前 token 对应的用户。取不到 id 就不缓存，宁可直接失败 */
+    public async getCurrentUser(): Promise<GitLabUser> {
+        this.reloadConfig();
+        if (this.userCache) {
+            return this.userCache;
+        }
+        const body = await this.request<RawGitLabUser>('/api/v4/user', 10000);
+        const user: GitLabUser = {
+            id: Number(body.id ?? 0),
+            username: body.username ?? '',
+            name: body.name ?? body.username ?? '',
+        };
+        if (!user.id) {
+            throw new Error('GitLab /user 没有返回 id，无法判断「我」是谁');
+        }
+        this.userCache = user;
+        return user;
+    }
+
+    /**
+     * MR Board 的列表：服务端按 reviewer / author 过滤，本地还要复核一次。
+     *
+     * opened 用于两列卡片；closed 只用于顶栏计数（merged 不拉取也不显示）。
+     * 翻页上限 2 页——个人队列超过 200 条时，先看最新的比看全量重要。
+     */
+    public async listMrsForUser(input: {
+        project: string;
+        targetBranch: string;
+        userId: number;
+        role: 'reviewer' | 'author';
+        state: 'opened' | 'closed';
+    }): Promise<GitLabMrRow[]> {
+        const filter = input.role === 'reviewer' ? `reviewer_id=${input.userId}` : `author_id=${input.userId}`;
+        const rows: RawGitLabMr[] = [];
+
+        for (let page = 1; page <= 2; page += 1) {
+            const query =
+                `/api/v4/projects/${encodeURIComponent(input.project)}/merge_requests` +
+                `?state=${input.state}&target_branch=${encodeURIComponent(input.targetBranch)}` +
+                `&${filter}&per_page=100&page=${page}&order_by=updated_at&sort=desc`;
+
+            const chunk = await this.request<RawGitLabMr[]>(query, 15000);
+            rows.push(...chunk);
+            if (chunk.length < 100) {
+                break;
+            }
+        }
+
+        return rows.map((row) => ({
+            projectPath: input.project,
+            iid: row.iid,
+            title: row.title ?? '',
+            description: row.description ?? '',
+            url: row.web_url,
+            state: row.state,
+            sourceBranch: row.source_branch ?? '',
+            targetBranch: row.target_branch,
+            author: personOf(row.author),
+            reviewerIds: (row.reviewers ?? []).map((reviewer) => Number(reviewer.id ?? 0)).filter(Boolean),
+            draft: row.draft === true || row.work_in_progress === true,
+            createdAt: row.created_at ?? '',
+            updatedAt: row.updated_at,
+        }));
+    }
+
+    /**
+     * 把一个 MR 的 diff 拼成统一 diff 文本，供评审会话阅读。
+     * GitLab 的 /diffs 只给 hunk，不带文件头，所以这里补 `--- a/` / `+++ b/`。
+     * 最多 3 页：超大的 MR 被截断也好过把请求拖死。
+     */
+    public async getMrDiffs(project: string, iid: number): Promise<string> {
+        const parts: string[] = [];
+
+        for (let page = 1; page <= 3; page += 1) {
+            const query = `/api/v4/projects/${encodeURIComponent(project)}/merge_requests/${iid}/diffs` +
+                `?per_page=100&page=${page}`;
+            const chunk = await this.request<
+                Array<{
+                    old_path?: string;
+                    new_path?: string;
+                    diff?: string;
+                    new_file?: boolean;
+                    deleted_file?: boolean;
+                }>
+            >(query, 20000);
+
+            for (const entry of chunk) {
+                const oldPath = entry.old_path ?? entry.new_path ?? 'unknown';
+                const newPath = entry.new_path ?? oldPath;
+                parts.push(`--- a/${oldPath}\n+++ b/${newPath}\n${entry.diff ?? ''}`);
+            }
+
+            if (chunk.length < 100) {
+                break;
+            }
+        }
+
+        return parts.join('\n');
+    }
+
     /**
      * 审批只能看这个端点：`approved_by` 在列表与详情接口里根本不存在。
      * 判据是 `approved === true`，不是 `approved_by.length > 0`。
@@ -147,19 +352,39 @@ export class GitLabService {
      * 取数失败返回 undefined（未知），不能返回一个「未批准」的假结论。
      */
     public async getApprovals(project: string, iid: number): Promise<GitLabApprovals | undefined> {
+        const key = `${project}!${iid}`;
+        const cached = approvalsCache.get(key);
+        if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+            // 缓存 Promise：两个看板同时问同一个 MR 时只发一次
+            return cached.promise;
+        }
+
+        const promise = this.fetchApprovals(project, iid);
+        approvalsCache.set(key, { at: Date.now(), promise });
+        const value = await promise;
+        if (value === undefined && approvalsCache.get(key)?.promise === promise) {
+            // 取数失败要判 unknown，不能把 unknown 也冻结一分钟
+            approvalsCache.delete(key);
+        }
+        return value;
+    }
+
+    private async fetchApprovals(project: string, iid: number): Promise<GitLabApprovals | undefined> {
         try {
             const body = await this.request<{
                 approved?: boolean;
                 approvals_left?: number;
-                approved_by?: Array<{ user?: { name?: string; username?: string } }>;
+                approved_by?: Array<{ user?: RawGitLabUser }>;
             }>(`/api/v4/projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`, 10000);
+
+            const people = (body.approved_by ?? []).map((entry) => personOf(entry.user)).filter((person) => !!person.id || !!person.name);
 
             return {
                 approved: body.approved === true,
                 approvalsLeft: typeof body.approvals_left === 'number' ? body.approvals_left : null,
-                approvedBy: (body.approved_by ?? [])
-                    .map((entry) => entry.user?.name ?? entry.user?.username ?? '')
-                    .filter(Boolean),
+                approvedBy: people.map((person) => person.name || person.username).filter(Boolean),
+                approvedByIds: people.map((person) => person.id).filter(Boolean),
+                approvedByPeople: people,
             };
         } catch (error) {
             console.warn(`[jira-board] 读取 MR !${iid} 审批失败，该卡将判为无法判定`, error);
@@ -210,7 +435,7 @@ export class GitLabService {
                     'Accept': 'application/json',
                 },
                 timeout: timeoutMs,
-                ...(isHttps ? { agent: this.httpsAgent } : {}),
+                ...(isHttps ? { agent: this.httpsAgent, ...intranetTlsOptions } : {}),
             };
 
             const req = transport.request(options, (res) => {

@@ -1,0 +1,28 @@
+τ¬ùσÅú[all] 90 σñ⌐σåà total=280 pages=3 µ£¼Θí╡=100
+τ¬ùσÅú[merged] 90 σñ⌐σåà total=259 pages=3 µ£¼Θí╡=100
+ΘÖÉµ╡üσñ┤: ratelimit-remaining=µùá ratelimit-limit=µùá retry-after=µùá
+
+=== MR Φç¬Φ║½µù╢Θù┤µê│ ===
+!3786 [merged] created=2026-11-09 13:00 updated=2026-11-09 13:00 merged=2026-11-09 13:00 closed=- sha=df28bf13
+!3691 [merged] created=2026-11-02 04:20 updated=2026-11-09 09:56 merged=2026-11-09 09:56 closed=- sha=7555c6d2
+!3780 [opened] created=2026-11-09 08:51 updated=2026-11-09 15:08 merged=- closed=- sha=null
+!3785 [opened] created=2026-11-09 11:08 updated=2026-11-09 11:08 merged=- closed=- sha=null
+!3786 commits=1 µ£Çµù⌐=2026-11-09 20:55 µ£ÇµÖÜ=2026-11-09 20:55
+
+=== /approvals µÿ»σÉªσ╕ªµù╢Θù┤ ===
+!3780 [opened] approved_by=0 sample keys=(τ⌐║)
+!3785 [opened] approved_by=0 sample keys=(τ⌐║)
+!3786 [merged] approved_by=1 sample keys=user,approved_at
+!3691 [merged] approved_by=1 sample keys=user,approved_at
+
+=== /notes τÜäσ«íµë╣τ▒╗ system note ===
+!3780 [opened] notes=4 σ«íµë╣τ¢╕σà│=0
+!3785 [opened] notes=2 σ«íµë╣τ¢╕σà│=0
+!3786 [merged] notes=2 σ«íµë╣τ¢╕σà│=1
+    2026-11-09 13:00  approved this merge request
+!3691 [merged] notes=11 σ«íµë╣τ¢╕σà│=1
+    2026-11-09 09:56  approved this merge request
+
+=== resource_state_events ===
+!3780 events=0
+!3785 events=0
