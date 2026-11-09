@@ -336,6 +336,23 @@ export class GitLabService {
     }
 
     /**
+     * 两个 ref 的 merge base。
+     *
+     * 祖先判定就是这一句：`merge_base(合入, 构建 SHA) === 合入` 说明构建树包含该合入。
+     * 没有公共祖先时 GitLab 返回 404，这里不吞错：由调用方判 unknown 并退回时间窗。
+     */
+    public async getMergeBase(project: string, left: string, right: string): Promise<string> {
+        const query =
+            `/api/v4/projects/${encodeURIComponent(project)}/repository/merge_base` +
+            `?refs[]=${encodeURIComponent(left)}&refs[]=${encodeURIComponent(right)}`;
+        const body = await this.request<{ id?: string }>(query, 10000);
+        if (!body.id) {
+            throw new Error('GitLab merge_base 没有返回 commit id');
+        }
+        return body.id;
+    }
+
+    /**
      * 把一个 MR 的 diff 拼成统一 diff 文本，供评审会话阅读。
      * GitLab 的 /diffs 只给 hunk，不带文件头，所以这里补 `--- a/` / `+++ b/`。
      * 最多 3 页：超大的 MR 被截断也好过把请求拖死。

@@ -14,6 +14,7 @@ import { GitLabService, clearGitLabCaches, type GitLabApprovals } from '../servi
 import { JenkinsService } from '../services/JenkinsService';
 import { associateMrs, toMrFacts } from '../services/MrAssociation';
 import { countJiraBadges, type BadgeCounts } from '../services/BadgeCounter';
+import { buildsWorthChecking, resolveContainment, type Containment } from '../services/BuildAncestry';
 import { buildChecksApplyTo, resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { stalledAfterMerge } from '../services/StalledAfterMerge';
 import { BoardPanel } from './BoardPanel';
@@ -29,6 +30,8 @@ interface RepoFacts {
     buildsOk: boolean;
     byKey: Map<string, MrFact[]>;
     builds: BuildFact[];
+    /** 祖先判定结果（key = iid@构建号）；缺失 = 未知 */
+    containment: Map<string, Containment>;
 }
 
 const ISSUE_FIELDS = [
@@ -428,7 +431,13 @@ export class BoardState {
 
             for (const [id, group] of groups) {
                 if (!group.repo.gitlabProject) {
-                    factsByRepo.set(id, { gitlabOk: false, buildsOk: true, byKey: new Map(), builds: [] });
+                    factsByRepo.set(id, {
+                        gitlabOk: false,
+                        buildsOk: true,
+                        byKey: new Map(),
+                        builds: [],
+                        containment: new Map(),
+                    });
                     continue;
                 }
 
@@ -511,11 +520,29 @@ export class BoardState {
                             })
                         );
                     }
-                    factsByRepo.set(id, { gitlabOk: true, buildsOk, byKey: facts, builds });
+                    factsByRepo.set(id, {
+                        gitlabOk: true,
+                        buildsOk,
+                        byKey: facts,
+                        builds,
+                        containment: await resolveContainment({
+                            gitlab,
+                            project: group.repo.gitlabProject,
+                            mrs: [...facts.values()].flat(),
+                            // 只问值得问的：最新成功构建（判「已构建」）与最新已完成构建（判高风险）
+                            builds: buildsWorthChecking(builds),
+                        }),
+                    });
                 } catch (error) {
                     const described = describeError(error);
                     console.warn(`[jira-board] ${group.repo.gitlabProject}@${group.repo.targetBranch} 取数失败`, error);
-                    factsByRepo.set(id, { gitlabOk: false, buildsOk, byKey: new Map(), builds });
+                    factsByRepo.set(id, {
+                        gitlabOk: false,
+                        buildsOk,
+                        byKey: new Map(),
+                        builds,
+                        containment: new Map(),
+                    });
                     this.stageNotices.push({
                         level: 'error',
                         message: `GitLab 取数失败（${group.repo.gitlabProject} → ${group.repo.targetBranch}）：${described.message}`,
@@ -630,6 +657,7 @@ export class BoardState {
                 buildChannel,
                 mrs,
                 builds: repoFacts?.builds ?? [],
+                containment: repoFacts?.containment,
                 inherited,
             }),
             mrs,

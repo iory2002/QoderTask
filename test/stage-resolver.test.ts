@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 
 import type { BuildFact, MrFact } from '../src/models/Board';
+import { containmentKey } from '../src/services/BuildAncestry';
 import { buildChecksApplyTo, pickCardMr, resolveStage } from '../src/services/DeliveryStageResolver';
 
 function mr(overrides: Partial<MrFact> & { iid: number }): MrFact {
@@ -23,6 +24,10 @@ function mr(overrides: Partial<MrFact> & { iid: number }): MrFact {
 
 function build(number: number, timestamp: string, result: string | null): BuildFact {
     return { number, result, timestamp: Date.parse(timestamp), branch: 'nexus/dev/7.10.x', url: 'u' };
+}
+
+function buildWithSha(number: number, timestamp: string, result: string | null, sha: string): BuildFact {
+    return { ...build(number, timestamp, result), sha };
 }
 
 const MERGED_AT = '2026-11-06T08:48:00Z';
@@ -269,3 +274,98 @@ test('Jenkins being down does not affect an unmerged card', () => {
     });
     assert.equal(result.stage, 'approved');
 });
+
+test('a successful build whose tree contains the merge commit makes the card built', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'bbbb2222');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success],
+        containment: new Map([[containmentKey(merged, success), true]]),
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.equal(result.build?.number, 245);
+    assert.match(result.evidence.join('\n'), /最新成功构建 #245（开始于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}）包含本次合入/);
+});
+
+test('a build that does not contain the merge commit leaves the card at merged', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'cccc3333');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success],
+        containment: new Map([[containmentKey(merged, success), false]]),
+    });
+
+    assert.equal(result.stage, 'merged');
+    assert.match(result.evidence.join('\n'), /不含本次合入/);
+});
+
+test('the same SHA built twice shows the newer build', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const older = buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'dddd4444');
+    const newer = buildWithSha(246, '2026-11-07T04:07:00Z', 'SUCCESS', 'dddd4444');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [older, newer],
+        containment: new Map([
+            [containmentKey(merged, older), true],
+            [containmentKey(merged, newer), true],
+        ]),
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.equal(result.build?.number, 246);
+});
+
+test('a FAILURE build is never counted as built, but an earlier successful containment still is', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'eeee5555');
+    const failure = buildWithSha(246, '2026-11-07T04:07:00Z', 'FAILURE', 'ffff6666');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success, failure],
+        containment: new Map([
+            [containmentKey(merged, success), true],
+            [containmentKey(merged, failure), true],
+        ]),
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.equal(result.build?.number, 245);
+});
+
+test('without a SHA the time window decides and the evidence says it is inferred', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = build(245, '2026-11-06T14:00:00Z', 'SUCCESS');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success],
+        containment: new Map([[containmentKey(merged, success), null]]),
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.match(result.evidence.join('\n'), /推断/);
+});
+

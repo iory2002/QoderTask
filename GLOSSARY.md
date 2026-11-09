@@ -16,6 +16,8 @@ Ladder, in order:
 
 The claim is about source, not artefacts: `Built` means the change was in the tree a build ran on. It never means a given installer or release contains it — the artefact comes from the tree at build start, while the build's recorded commit may come from a later checkout of the same build.
 
+When a build records no commit SHA (or the ancestry question cannot be answered), the stage falls back to the old time window — a successful build started after the merge — and the detail panel labels that conclusion as **inferred** (`推断`). An inference is never presented as the same fact as ancestry.
+
 The ladder is ordered by reached-ness, not by completeness: skipping a rung (merged without review) advances the stage rather than blocking it.
 
 Stages map onto columns only as a suggestion: approval hints at `In Code Review` for a Story, a merge hints at `In Test` for a Bug or Task. The legal target is whatever the issue's own transitions allow — never inferred from column order.

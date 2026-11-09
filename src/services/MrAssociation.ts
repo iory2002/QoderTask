@@ -64,6 +64,7 @@ export function toMrFacts(associated: AssociatedMr[]): MrFact[] {
         // merged / closed 不查审批；opened 由 BoardState 按 /approvals 结果覆盖
         approvalsKnown: mr.state !== 'opened',
         mergedAt: mr.mergedAt,
+        mergeCommitSha: mr.mergeCommitSha,
         matchedBy,
         isCardMr: false,
     }));

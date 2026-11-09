@@ -21,6 +21,8 @@ export interface MrFact {
     /** false = /approvals 取数失败，此时「未批准」不可信，阶段只能判无法判定 */
     approvalsKnown: boolean;
     mergedAt?: string;
+    /** 合入后的 merge commit：祖先判定的左边 */
+    mergeCommitSha?: string;
     /** 靠什么关联到这张卡：标题 > 描述 > 分支名 */
     matchedBy: 'title' | 'description' | 'branch';
     /** 卡片上展示的那一个（阶段最高；同阶段 merged_at 最新） */
@@ -36,6 +38,8 @@ export interface BuildFact {
     timestamp: number;
     branch: string;
     url: string;
+    /** 该构建 checkout 的 commit；拿不到时祖先判定只能退回时间窗 */
+    sha?: string;
 }
 
 /** 构建通道能力：full=可判到「已构建」；merge-only=只到「已合入」；none=不追踪 */

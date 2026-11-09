@@ -51,6 +51,19 @@ export function encodeJobPath(jobPath: string): string {
         .join('');
 }
 
+/** 从 actions 里挖出 lastBuiltRevision.SHA1；缺失就是没有，不猜 */
+export function buildShaOf(
+    actions: Array<{ lastBuiltRevision?: { SHA1?: string } }> | undefined
+): string | undefined {
+    for (const action of actions ?? []) {
+        const sha = action.lastBuiltRevision?.SHA1;
+        if (sha) {
+            return sha;
+        }
+    }
+    return undefined;
+}
+
 /**
  * Jenkins 只负责「目标分支最近构建」这一件事。
  *
@@ -88,11 +101,18 @@ export class JenkinsService {
     /** 最近 count 次构建；branch 用配置里的目标分支回填，供详情浮层展示 */
     public async getRecentBuilds(jobPath: string, targetBranch: string, count = 20): Promise<BuildFact[]> {
         const base = (this.config?.baseUrl ?? '').replace(/\/+$/, '');
+        // lastBuiltRevision.SHA1 是该构建 checkout 的 commit：祖先判定的右边。
+        // 拿不到时字段缺失，调用方退回时间窗。
         const url = new URL(
-            `${base}${this.jobUrl(jobPath)}/api/json?tree=builds[number,result,timestamp]{0,${count}}`
+            `${base}${this.jobUrl(jobPath)}/api/json?tree=builds[number,result,timestamp,actions[lastBuiltRevision[SHA1]]]{0,${count}}`
         );
         const body = await this.request<{
-            builds?: Array<{ number: number; result: string | null; timestamp: number }>;
+            builds?: Array<{
+                number: number;
+                result: string | null;
+                timestamp: number;
+                actions?: Array<{ lastBuiltRevision?: { SHA1?: string } }>;
+            }>;
         }>(url);
 
         return (body.builds ?? []).map((build) => ({
@@ -101,6 +121,7 @@ export class JenkinsService {
             timestamp: build.timestamp,
             branch: targetBranch,
             url: this.buildUrl(jobPath, build.number),
+            sha: buildShaOf(build.actions),
         }));
     }
 

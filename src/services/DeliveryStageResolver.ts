@@ -1,4 +1,5 @@
 import type { BuildChannel, BuildFact, MrFact, Stage } from '../models/Board';
+import { containmentKey, type Containment } from './BuildAncestry';
 import { epochOrZero } from './time';
 
 export interface StageInput {
@@ -17,6 +18,11 @@ export interface StageInput {
     mrs: MrFact[];
     /** 目标分支 job 上的构建，任意顺序 */
     builds: BuildFact[];
+    /**
+     * 已问过 GitLab 的祖先判定：key = containmentKey(mr, build)。
+     * 缺失或 null = 未知，退回时间窗并标「推断」。
+     */
+    containment?: Map<string, Containment>;
     /** 子任务继承：父任务的解析结果 */
     inherited?: { stage: Stage; buildFailed: boolean; evidence: string[]; mr?: MrFact; build?: BuildFact };
 }
@@ -163,23 +169,42 @@ export function resolveStage(input: StageInput): StageResult {
             return { stage: 'unknown', buildFailed: false, buildChannel: channel, cardMr, evidence };
         }
 
-        const after = input.builds.filter((build) => build.timestamp > mergedAt);
-        const successes = after.filter((build) => build.result === 'SUCCESS');
-        if (successes.length > 0) {
-            const latest = successes.reduce((left, right) => (right.timestamp > left.timestamp ? right : left));
+        // 「已构建」= 最新一次**成功**构建的代码树包含本次合入。
+        // FAILURE 与进行中的构建都不算；同一 SHA 被多次构建时取最新那次。
+        const latestSuccess = input.builds
+            .filter((build) => build.result === 'SUCCESS')
+            .sort((left, right) => right.timestamp - left.timestamp || right.number - left.number)[0];
+
+        if (latestSuccess) {
+            const verdict = input.containment?.get(containmentKey(cardMr, latestSuccess));
+            const stamp = `#${latestSuccess.number}（开始于 ${formatTime(latestSuccess.timestamp)}）`;
+
+            if (verdict === true) {
+                evidence.push(`最新成功构建 ${stamp}包含本次合入`);
+                return { stage: 'built', buildFailed: false, buildChannel: channel, cardMr, build: latestSuccess, evidence };
+            }
+            if (verdict === false) {
+                evidence.push(`最新成功构建 ${stamp}不含本次合入，等下一次成功构建`);
+                return { stage: 'merged', buildFailed: false, buildChannel: channel, cardMr, build: latestSuccess, evidence };
+            }
+
+            // 拿不到 SHA / 祖先判定失败：退回时间窗，并明说是推断
+            const inferred = latestSuccess.timestamp > mergedAt;
             evidence.push(
-                `构建 #${latest.number} SUCCESS，开始于 ${formatTime(latest.timestamp)}（${latest.branch}），晚于合入时间`
+                `最新成功构建 ${stamp}${inferred ? '晚于' : '早于'}合入时间` +
+                    `（推断：构建未提供 SHA 或祖先判定失败，只能按时间窗判断）`
             );
             return {
-                stage: 'built',
+                stage: inferred ? 'built' : 'merged',
                 buildFailed: false,
                 buildChannel: channel,
                 cardMr,
-                build: latest,
+                build: latestSuccess,
                 evidence,
             };
         }
 
+        const after = input.builds.filter((build) => build.timestamp > mergedAt);
         const running = after.filter((build) => build.result === null);
         if (running.length > 0) {
             evidence.push(`构建 #${running[0].number} 仍在进行中，结果未知，不作为结论`);
