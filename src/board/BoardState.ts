@@ -17,7 +17,9 @@ import { countJiraBadges, type BadgeCounts } from '../services/BadgeCounter';
 import { buildsWorthChecking, newlyIntroducedCount, resolveContainment, type Containment } from '../services/BuildAncestry';
 import { buildChecksApplyTo, resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { stalledAfterMerge } from '../services/StalledAfterMerge';
+import { epochOf } from '../services/time';
 import { BoardPanel } from './BoardPanel';
+import { FactStore, type ApprovalRow, type MrRow } from './FactStore';
 import { ConfigError, describeError } from './errors';
 import { revisionOf } from './fingerprint';
 import { readBadgeConfig, readConfig, type BoardConfig, type RepoConfig } from './config';
@@ -80,10 +82,13 @@ export class BoardState {
     private readonly epicLabels = new Map<string, string>();
 
     private readonly jira = new JiraService();
+    /** 事实库；null = 不可用，界面照常用内存态 */
+    private readonly store: FactStore | null;
     /** 当前凭据对应的用户，用于本地「只看我的」过滤；拉一次就缓存 */
     private viewer: { name: string; displayName: string } | null = null;
 
-    constructor() {
+    constructor(factsPath?: string) {
+        this.store = factsPath ? FactStore.open(factsPath) : null;
         const config = readConfig();
         this.scope = { projects: config.projects, onlyMine: config.onlyMineByDefault };
     }
@@ -237,6 +242,7 @@ export class BoardState {
 
             this.freshness = { lastSuccessAt: Date.now(), stale: false, error: null };
             this.notices = this.buildNotices();
+            this.persistJira(config);
         } catch (error) {
             const described = describeError(error);
             this.freshness = {
@@ -373,6 +379,7 @@ export class BoardState {
             isSubtask: fields.issuetype?.subtask === true || issueType.toLowerCase() === 'sub-task',
             parentKey: fields.parent?.key,
             commentCount: fields.comment?.total ?? 0,
+            updatedAtEpoch: epochOf(fields.updated as string | undefined),
             stage: null,
             buildFailed: false,
             buildChannel: 'none',
@@ -531,6 +538,10 @@ export class BoardState {
                         mrs: allMrs,
                         builds: checkedBuilds,
                     });
+                    this.persistGitLab(group.repo, mrs, approvals);
+                    if (group.repo.jenkinsJobPath && builds.length > 0) {
+                        this.store?.upsertBuilds(group.repo.jenkinsJobPath, builds);
+                    }
                     factsByRepo.set(id, {
                         gitlabOk: true,
                         buildsOk,
@@ -682,6 +693,71 @@ export class BoardState {
         // 子任务自己没有 MR时，用继承来的那个算合入时长
         const forStall = card.mrs.length > 0 ? card.mrs : result.cardMr ? [result.cardMr] : [];
         card.mergedDaysAgo = stalledAfterMerge(forStall, Date.now())?.days ?? null;
+    }
+
+    /** Jira 快照入库：board / sprint / issue 与 last_success_at 同一事务 */
+    private persistJira(config: BoardConfig): void {
+        this.store?.replaceJira(`jira:${config.boardId}`, {
+            boardId: config.boardId,
+            columns: this.columns,
+            rankField: this.rankField,
+            sprint: this.sprint
+                ? { id: this.sprint.id, name: this.sprint.name, state: this.sprint.state, startAt: null, endAt: null }
+                : null,
+            cards: this.cards,
+        });
+    }
+
+    /**
+     * GitLab 分支快照入库。
+     *
+     * 只由 Jira 板写：它拉的是「目标分支全量」；MR 板拉的是按 reviewer/author 过滤的个人切片，
+     * 写进同一个 scope 会把分支快照缩成个人队列，两个窗口互相覆盖。
+     */
+    private persistGitLab(
+        repo: RepoConfig,
+        mrs: Awaited<ReturnType<GitLabService['listTargetBranchMrs']>>['rows'],
+        approvals: Map<number, GitLabApprovals | undefined>
+    ): void {
+        if (!this.store) {
+            return;
+        }
+        const scope = `gitlab:${repo.gitlabProject}@${repo.targetBranch}`;
+        const rows: MrRow[] = mrs.map((mr) => ({
+            project: repo.gitlabProject,
+            iid: mr.iid,
+            state: mr.state,
+            title: mr.title,
+            sourceBranch: mr.sourceBranch,
+            targetBranch: mr.targetBranch,
+            authorId: mr.authorId ?? null,
+            authorName: mr.authorName ?? null,
+            createdAt: epochOf(mr.createdAt),
+            updatedAt: epochOf(mr.updatedAt),
+            mergedAt: epochOf(mr.mergedAt),
+            mergeCommitSha: mr.mergeCommitSha ?? null,
+            draft: false,
+            hasConflicts: mr.hasConflicts,
+            blockingDiscussionsResolved: mr.blockingDiscussionsResolved,
+        }));
+
+        const approvalRows: ApprovalRow[] = [];
+        for (const [iid, approval] of approvals) {
+            if (!approval) {
+                continue;
+            }
+            for (const person of approval.approvedByPeople) {
+                approvalRows.push({
+                    project: repo.gitlabProject,
+                    iid,
+                    userId: person.id,
+                    userName: person.name || person.username || null,
+                    approvedAt: approval.approvedAtById?.[String(person.id)] ?? null,
+                });
+            }
+        }
+
+        this.store.replaceGitLab(scope, { project: repo.gitlabProject, mrs: rows, approvals: approvalRows });
     }
 
     private buildNotices(): BoardNotice[] {

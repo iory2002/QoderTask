@@ -18,5 +18,5 @@
 - `src/services/BuildAncestry.ts`：`merge_base(合入, 构建 SHA) === 合入` 判包含；三态 `true/false/null`，`null` 一律退回时间窗。结果按 SHA 对永久缓存。
 - `JenkinsService` 的 tree 加 `actions[lastBuiltRevision[SHA1]]`，构建事实带 `sha`；`MrFact` 带 `mergeCommitSha`。
 - 每轮只对「最新成功构建 + 最新已完成构建」问祖先关系（`buildsWorthChecking`），避免 20×N 的笛卡尔积把首屏拖死。
-- `GLOSSARY.md` 补上「没有 SHA 时如何退回」的一段。提交 `a45c10f`。
+- `GLOSSARY.md` 补上「没有 SHA 时如何退回」的一段。提交 `5a47726`。
 

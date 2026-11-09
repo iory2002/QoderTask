@@ -22,6 +22,7 @@ function card(overrides: Partial<BoardCard> & { key: string }): BoardCard {
         pinned: false,
         isSubtask: false,
         commentCount: 0,
+        updatedAtEpoch: null,
         stage: null,
         buildFailed: false,
         buildChannel: 'none',

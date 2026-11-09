@@ -73,6 +73,8 @@ export interface BoardCard {
     isSubtask: boolean;
     parentKey?: string;
     commentCount: number;
+    /** Jira 的 updated 字段，入库前已解析成 epoch ms；缺失为 null */
+    updatedAtEpoch: number | null;
     /** null = 该项目不追踪阶段，不出徽章 */
     stage: Stage | null;
     /**

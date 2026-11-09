@@ -54,6 +54,10 @@ export interface GitLabMr {
     mergeCommitSha?: string;
     webUrl: string;
     updatedAt: string;
+    /** 入库要用的作者与创建时间；列表接口白送 */
+    createdAt?: string;
+    authorId?: number;
+    authorName?: string;
     /** null = 服务端没返回；不是 false */
     hasConflicts: boolean | null;
     blockingDiscussionsResolved: boolean | null;
@@ -68,6 +72,8 @@ export interface GitLabApprovals {
     approvedByIds: number[];
     /** 审批人完整信息，MR Board 的浮层展示用 */
     approvedByPeople: MrPerson[];
+    /** 审批时间（epoch ms），按用户 id；接口没给就是 null */
+    approvedAtById?: Record<string, number | null>;
 }
 
 export interface GitLabUser {
@@ -269,6 +275,9 @@ export class GitLabService {
             mergeCommitSha: row.merge_commit_sha ?? undefined,
             webUrl: row.web_url,
             updatedAt: row.updated_at,
+            createdAt: row.created_at,
+            authorId: row.author?.id === undefined ? undefined : Number(row.author.id),
+            authorName: row.author?.name ?? row.author?.username,
             hasConflicts: nullableBool(row.has_conflicts),
             blockingDiscussionsResolved: nullableBool(row.blocking_discussions_resolved),
         })), truncated: page.truncated };
@@ -425,10 +434,18 @@ export class GitLabService {
             const body = await this.request<{
                 approved?: boolean;
                 approvals_left?: number;
-                approved_by?: Array<{ user?: RawGitLabUser }>;
+                approved_by?: Array<{ user?: RawGitLabUser; approved_at?: string }>;
             }>(`/api/v4/projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`, 10000);
 
             const people = (body.approved_by ?? []).map((entry) => personOf(entry.user)).filter((person) => !!person.id || !!person.name);
+            const approvedAtById: Record<string, number | null> = {};
+            for (const entry of body.approved_by ?? []) {
+                const id = Number(entry.user?.id ?? 0);
+                if (id) {
+                    const parsed = entry.approved_at ? Date.parse(entry.approved_at) : Number.NaN;
+                    approvedAtById[String(id)] = Number.isNaN(parsed) ? null : parsed;
+                }
+            }
 
             return {
                 approved: body.approved === true,
@@ -436,6 +453,7 @@ export class GitLabService {
                 approvedBy: people.map((person) => person.name || person.username).filter(Boolean),
                 approvedByIds: people.map((person) => person.id).filter(Boolean),
                 approvedByPeople: people,
+                approvedAtById,
             };
         } catch (error) {
             console.warn(`[jira-board] 读取 MR !${iid} 审批失败，该卡将判为无法判定`, error);

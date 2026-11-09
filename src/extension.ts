@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { BoardEntryTree } from './board/BoardEntryTree';
@@ -16,7 +18,8 @@ let storageRoot: vscode.Uri | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
     try {
-        boardState = new BoardState();
+        const factsPath = ensureFactsPath(context.globalStorageUri.fsPath);
+        boardState = new BoardState(factsPath);
         mrBoardState = new MrBoardState();
         storageRoot = context.storageUri ?? context.globalStorageUri;
 
@@ -147,6 +150,21 @@ export function activate(context: vscode.ExtensionContext) {
     } catch (error) {
         console.error('[pc-board] activation failed', error);
         vscode.window.showErrorMessage(`PC Board 启动失败：${error}`);
+    }
+}
+
+/**
+ * 事实库路径。全局存储按用户共享：同一台机器上多个 IDE 窗口指向同一个文件，
+ * 这正是「多开共享」的物理基础（协调协议见 .scratch/devops-board/research/02）。
+ * 目录不可写就返回 undefined，界面退回内存态。
+ */
+function ensureFactsPath(dir: string): string | undefined {
+    try {
+        fs.mkdirSync(dir, { recursive: true });
+        return path.join(dir, 'facts.sqlite');
+    } catch (error) {
+        console.warn('[pc-board] 无法创建全局存储目录，事实库禁用', error);
+        return undefined;
     }
 }
 
