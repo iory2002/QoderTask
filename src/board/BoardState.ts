@@ -22,7 +22,7 @@ import { stalledAfterMerge } from '../services/StalledAfterMerge';
 import { epochOf } from '../services/time';
 import { BoardPanel } from './BoardPanel';
 import { FactStore, FOLLOW_POLL_MS, FRESHNESS_MS, type ApprovalRow, type MrRow } from './FactStore';
-import { approvalsFromStore, cardFromIssue, gitLabMrsFromStore, restoredFreshness } from './Restore';
+import { approvalsFromStore, cardFromIssue, mrFactsFromLinks, restoredFreshness } from './Restore';
 import { ConfigError, describeError } from './errors';
 import { revisionOf } from './fingerprint';
 import { readBadgeConfig, readConfig, type BoardConfig, type RepoConfig } from './config';
@@ -350,6 +350,7 @@ export class BoardState {
             if (!this.viewer) {
                 this.viewer = await this.jira.getMyself();
                 this.store?.setMeta('jira.viewer_name', this.viewer.name);
+                this.store?.setMeta('jira.viewer_display_name', this.viewer.displayName);
             }
 
             this.cards = this.sprint ? await this.fetchCards(this.sprint) : [];
@@ -594,6 +595,7 @@ export class BoardState {
                     } catch (error) {
                         buildsOk = false;
                         const described = describeError(error);
+                        this.store?.releaseScope(`jenkins:${group.repo.jenkinsJobPath}`, described.message);
                         console.warn(`[jira-board] Jenkins ${group.repo.jenkinsJobPath} 取数失败`, error);
                         this.stageNotices.push({
                             level: 'error',
@@ -655,7 +657,7 @@ export class BoardState {
                         mrs: allMrs,
                         builds: checkedBuilds,
                     });
-                    this.persistGitLab(group.repo, mrs, approvals);
+                    this.persistGitLab(group.repo, mrs, approvals, byKey);
                     if (group.repo.jenkinsJobPath && builds.length > 0) {
                         this.store?.upsertBuilds(group.repo.jenkinsJobPath, builds);
                     }
@@ -799,47 +801,45 @@ export class BoardState {
         const sprint = this.store.activeSprintOf(config.boardId);
         this.sprint = sprint ? { id: sprint.id, name: sprint.name, state: sprint.state } : null;
 
-        const viewerName = this.store.meta('jira.viewer_name');
-        this.cards = issues.map((row) =>
-            cardFromIssue(row, board.columns, viewerName, (key) => this.jira.browseUrl(key))
-        );
+        const viewerName = this.store.meta('jira.viewer_display_name') ?? this.store.meta('jira.viewer_name');
+        const pinnedKeys = new Set(config.devMode ? config.extraIssueKeys : []);
+        this.cards = issues.map((row) => {
+            const card = cardFromIssue(row, board.columns, viewerName, (key) => this.jira.browseUrl(key));
+            card.pinned = pinnedKeys.has(row.key);
+            return card;
+        });
 
         const repoByProject = this.repoByProject(config);
         const factsByRepo = new Map<string, RepoFacts>();
         for (const repo of new Set(repoByProject.values())) {
             const id = `${repo.gitlabProject}@${repo.targetBranch}`;
             const mrRows = this.store.mrsOf(`gitlab:${id}`);
-            const mrs = gitLabMrsFromStore(mrRows);
 
             const approvals = new Map<number, GitLabApprovals | undefined>();
             for (const row of mrRows) {
                 if (row.state !== 'opened') {
                     continue;
                 }
+                // 没查过 /approvals 的 MR 返回 undefined（未知），不要编成「未批准」
                 approvals.set(row.iid, approvalsFromStore(this.store.approvalsOf(row.project, row.iid), row));
             }
 
-            const facts = new Map<string, MrFact[]>();
-            const projects = [...config.projects, ...repo.jiraProjects];
-            for (const [key, associated] of associateMrs(mrs, projects)) {
-                facts.set(
-                    key,
-                    toMrFacts(associated).map((fact) => {
-                        if (fact.state !== 'opened') {
-                            return fact;
-                        }
-                        const approval = approvals.get(fact.iid);
-                        return approval === undefined
-                            ? { ...fact, approvalsKnown: false }
-                            : {
-                                  ...fact,
-                                  approved: approval.approved,
-                                  approvedBy: approval.approvedBy,
-                                  approvalsLeft: approval.approvalsLeft,
-                                  approvalsKnown: true,
-                              };
-                    })
-                );
+            const facts = mrFactsFromLinks(mrRows, this.store.linksOf(`gitlab:${id}`));
+            for (const list of facts.values()) {
+                for (const fact of list) {
+                    if (fact.state !== 'opened') {
+                        continue;
+                    }
+                    const approval = approvals.get(fact.iid);
+                    if (approval) {
+                        fact.approved = approval.approved;
+                        fact.approvedBy = approval.approvedBy;
+                        fact.approvalsLeft = approval.approvalsLeft;
+                        fact.approvalsKnown = true;
+                    } else {
+                        fact.approvalsKnown = false;
+                    }
+                }
             }
 
             const builds: BuildFact[] = repo.jenkinsJobPath
@@ -853,9 +853,16 @@ export class BoardState {
                   }))
                 : [];
 
+            // 「取数成功过」是事实，不是默认值：没成功过的 scope 必须判 unknown，
+            // 否则一张从未拉到的 MR 会在恢复后变成「未提交」。
+            const gitlabOk = this.store.fetchStateOf(`gitlab:${id}`)?.lastSuccessAt != null;
+            const buildsOk = repo.jenkinsJobPath
+                ? this.store.fetchStateOf(`jenkins:${repo.jenkinsJobPath}`)?.lastSuccessAt != null
+                : true;
+
             factsByRepo.set(id, {
-                gitlabOk: true,
-                buildsOk: true,
+                gitlabOk,
+                buildsOk,
                 byKey: facts,
                 builds,
                 containment: new Map(),
@@ -863,7 +870,7 @@ export class BoardState {
             });
         }
 
-        this.applyResolvedStages(this.cards, config, repoByProject, factsByRepo, true);
+        this.applyResolvedStages(this.cards, config, repoByProject, factsByRepo, new GitLabService().isConfigured());
         this.freshness = restoredFreshness(this.store.lastSuccessAt(scope));
         this.notices = this.buildNotices();
         console.log(`[jira-board] 从事实库恢复 ${this.cards.length} 张卡（上一次成功 ${new Date(
@@ -958,7 +965,8 @@ export class BoardState {
     private persistGitLab(
         repo: RepoConfig,
         mrs: Awaited<ReturnType<GitLabService['listTargetBranchMrs']>>['rows'],
-        approvals: Map<number, GitLabApprovals | undefined>
+        approvals: Map<number, GitLabApprovals | undefined>,
+        byKey: Map<string, Array<{ mr: { iid: number }; matchedBy: string }>>
     ): void {
         if (!this.store) {
             return;
@@ -1003,7 +1011,16 @@ export class BoardState {
             }
         }
 
-        this.store.replaceGitLab(scope, { project: repo.gitlabProject, mrs: rows, approvals: approvalRows });
+        this.store.replaceGitLab(scope, {
+            project: repo.gitlabProject,
+            mrs: rows,
+            approvals: approvalRows,
+            // 只删本轮真的查过的 iid：整条分支的删法会抹掉 MR 板写的审批
+            queriedApprovalIids: [...approvals.keys()],
+            links: [...byKey.entries()].flatMap(([issueKey, associated]) =>
+                associated.map((entry) => ({ iid: entry.mr.iid, issueKey, matchedBy: entry.matchedBy }))
+            ),
+        });
     }
 
     private buildNotices(): BoardNotice[] {

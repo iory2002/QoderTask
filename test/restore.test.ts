@@ -119,11 +119,16 @@ test('an open MR restored from the store keeps its approval verdict instead of g
         ],
         mr
     );
-
+    assert.ok(approval, 'a known approval verdict must come back');
     assert.equal(approval.approved, true);
     assert.equal(approval.approvalsLeft, 0);
     assert.deepEqual(approval.approvedByIds, [5]);
     assert.equal(approval.approvedAtById?.['5'], 1_700_000_200_000);
+});
+
+test('an approval verdict that was never fetched stays unknown, not "not approved"', () => {
+    const unknown = approvalsFromStore([], mrRow({ iid: 12, state: 'opened', approved: null }));
+    assert.equal(unknown, undefined);
 });
 
 test('the MR board rebuilds both columns from stored rows and approvals', () => {

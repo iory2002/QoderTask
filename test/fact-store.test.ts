@@ -188,6 +188,8 @@ test('a gitlab scope keeps its mr rows and approval snapshot', () => {
             approvals: [
                 { project: 'group/repo', iid: 3786, userId: 42, userName: 'Bob', approvedAt: 1_700_000_200_000 },
             ],
+            queriedApprovalIids: [3786],
+            links: [{ iid: 3786, issueKey: 'NEX2-1', matchedBy: 'title' }],
         });
 
         assert.equal(replaced, true);
@@ -203,6 +205,7 @@ test('a gitlab scope keeps its mr rows and approval snapshot', () => {
         const approvals = store.approvalsOf('group/repo', 3786);
         assert.equal(approvals.length, 1);
         assert.equal(approvals[0].approvedAt, 1_700_000_200_000);
+        assert.deepEqual(store.linksOf(scope), [{ iid: 3786, issueKey: 'NEX2-1', matchedBy: 'title' }]);
     });
 });
 
@@ -324,6 +327,68 @@ test('a read-only library refuses to claim instead of pretending', () => {
 
     result.store.close();
     rmSync(dir, { recursive: true, force: true });
+});
+
+test('a successful sync hands the placeholder back immediately', () => {
+    withStore((store) => {
+        store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })]));
+        const now = Date.now();
+
+        // 先抢到，再成功写一轮，占位必须归零（否则 45 秒内的手动刷新会被自己挡住）
+        assert.equal(store.claimScope(SCOPE, true, 'window-a', now), 'claimed');
+        store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })]));
+        assert.equal(store.claimScope(SCOPE, true, 'window-a', now + 1000), 'claimed');
+    });
+});
+
+test('approval rows are only replaced for the MRs this fetch actually asked about', () => {
+    withStore((store) => {
+        const mine = 'gitlab-user:group/repo@nexus/dev/7.10.x';
+        const branch = 'gitlab:group/repo@nexus/dev/7.10.x';
+        const mr = (iid: number) => ({
+            project: 'group/repo',
+            iid,
+            state: 'opened',
+            title: `MR ${iid}`,
+            sourceBranch: `bug-${iid}`,
+            targetBranch: 'nexus/dev/7.10.x',
+            authorId: 7,
+            authorName: 'Alice',
+            createdAt: 0,
+            updatedAt: 0,
+            mergedAt: null,
+            mergeCommitSha: null,
+            draft: false,
+            hasConflicts: null,
+            blockingDiscussionsResolved: null,
+            reviewerIds: [],
+            webUrl: `https://gitlab/!${iid}`,
+            approved: true,
+            approvalsLeft: 0,
+        });
+
+        store.replaceGitLab(mine, {
+            project: 'group/repo',
+            mrs: [mr(1), mr(2)],
+            approvals: [
+                { project: 'group/repo', iid: 1, userId: 42, userName: 'Me', approvedAt: 10 },
+                { project: 'group/repo', iid: 2, userId: 42, userName: 'Me', approvedAt: 20 },
+            ],
+            queriedApprovalIids: [1, 2],
+            links: [],
+        });
+
+        // 分支快照只查了 !1，不能把 !2 的审批一并删掉
+        store.replaceGitLab(branch, {
+            project: 'group/repo',
+            mrs: [mr(1)],
+            approvals: [{ project: 'group/repo', iid: 1, userId: 42, userName: 'Me', approvedAt: 10 }],
+            queriedApprovalIids: [1],
+            links: [],
+        });
+
+        assert.equal(store.approvalsOf('group/repo', 2).length, 1, 'the personal slice survives');
+    });
 });
 
 test('derived state is never persisted', () => {

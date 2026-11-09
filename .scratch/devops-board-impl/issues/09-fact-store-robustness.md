@@ -18,5 +18,5 @@
 - 迁移表 `MIGRATIONS`：第 i 项把库从 v i 推到 v i+1；每步 `BEGIN IMMEDIATE ... COMMIT`，失败 `ROLLBACK` 并保留原库。迁移前 copyFile 出 `.bak`（空文件不备）。
 - 损坏：关掉句柄再改名（Windows 不允许改还开着的文件）→ `<db>.corrupt-<时间戳>`，原文件保留不删。
 - 高版本：`readOnly: true` 重新打开，`transaction()` 一律返回 false；`user_version` 保持原值。
-- 测试：`test/fact-store.test.ts` 三条路径。提交 `98c0a28`。
+- 测试：`test/fact-store.test.ts` 三条路径。提交 `ce24631`。
 

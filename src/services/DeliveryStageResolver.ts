@@ -195,7 +195,9 @@ export function resolveStage(input: StageInput): StageResult {
 
         // 高风险：从未被成功构建包含过，而最新已完成构建又确实包含它并失败了。
         // 两个「确实」缺一不可：拿不到祖先关系就不标，否则分支一红整板都是红字。
-        if (latestFailure && failureVerdict === true) {
+        // 有成功构建但「是否包含」判不出来时，同样不许标。
+        const neverBuilt = latestSuccess === undefined || successVerdict === false;
+        if (latestFailure && failureVerdict === true && neverBuilt) {
             evidence.push(
                 `最新已完成构建 #${latestFailure.number} FAILURE，开始于 ${formatTime(latestFailure.timestamp)}`
             );

@@ -131,6 +131,16 @@ export interface GitLabSnapshot {
     project: string;
     mrs: MrRow[];
     approvals: ApprovalRow[];
+    /** 本轮**真正查过** /approvals 的 iid：只能删这些 MR 的审批，不能拿整条分支去删 */
+    queriedApprovalIids: number[];
+    /** MR → Jira key 的关联结果（事实，不是派生）；恢复时不必重新猜 */
+    links: Array<{ iid: number; issueKey: string; matchedBy: string }>;
+}
+
+export interface LinkRow {
+    iid: number;
+    issueKey: string;
+    matchedBy: string;
 }
 
 export interface ColumnRow {
@@ -369,10 +379,16 @@ export class FactStore {
     }
 
     public setMeta(key: string, value: string): void {
-        this.db.prepare('INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(
-            key,
-            value
-        );
+        if (this.readOnly) {
+            return;
+        }
+        try {
+            this.db
+                .prepare('INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v')
+                .run(key, value);
+        } catch (error) {
+            console.warn('[fact-store] 写 meta 失败', error);
+        }
     }
 
     /** 该 scope 上一次成功取数的时间；从未成功为 null */
@@ -495,9 +511,9 @@ export class FactStore {
                 );
             }
 
-            // 审批是快照：先删掉本 scope 内所有 MR 的审批，再按本次结果写
-            const iids = [...new Set(snapshot.mrs.map((mr) => mr.iid))];
-            for (const iid of iids) {
+            // 审批是快照：只替换本轮真正查过的那几个 MR，绝不能拿整条分支的 iid 去删——
+            // 那些行可能属于 MR 板的个人切片，删掉会让「我已批过」退回「待我审」。
+            for (const iid of snapshot.queriedApprovalIids) {
                 this.db.prepare('DELETE FROM mr_approval WHERE project = ? AND iid = ?').run(snapshot.project, iid);
             }
             const insertApproval = this.db.prepare(
@@ -513,6 +529,16 @@ export class FactStore {
                     approval.approvedAt,
                     now
                 );
+            }
+
+            // 关联结果也按 scope 整体替换：恢复时直接用，不再拿空 description 重新猜
+            this.db.prepare('DELETE FROM mr_link WHERE fetched_scope = ?').run(scope);
+            const insertLink = this.db.prepare(
+                `INSERT INTO mr_link(project, iid, issue_key, matched_by, fetched_scope, seen_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`
+            );
+            for (const link of snapshot.links) {
+                insertLink.run(snapshot.project, link.iid, link.issueKey, link.matchedBy, scope, now);
             }
 
             this.stampSuccess(scope, now);
@@ -547,6 +573,9 @@ export class FactStore {
             for (const row of overflow) {
                 remove.run(jobPath, Number(row.number));
             }
+
+            // 构建事实也属于「这个 scope 成功取过一次」：恢复时据此判断 buildsOk
+            this.stampSuccess(`jenkins:${jobPath}`, now);
         });
     }
 
@@ -777,6 +806,21 @@ export class FactStore {
         );
     }
 
+    public linksOf(scope: string): LinkRow[] {
+        return this.read(() =>
+            this.db
+                .prepare(
+                    `SELECT iid, issue_key, matched_by FROM mr_link WHERE fetched_scope = ? ORDER BY issue_key, iid`
+                )
+                .all(scope)
+                .map((row) => ({
+                    iid: Number(row.iid),
+                    issueKey: String(row.issue_key),
+                    matchedBy: String(row.matched_by),
+                }))
+        );
+    }
+
     public columnsOf(table: string): ColumnRow[] {
         return this.read(() =>
             (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<Record<string, unknown>>).map((row) => ({
@@ -822,6 +866,8 @@ export class FactStore {
                  ON CONFLICT(scope) DO UPDATE SET
                    last_success_at = excluded.last_success_at,
                    last_attempt_at = excluded.last_attempt_at,
+                   attempting_until = 0,
+                   owner = NULL,
                    last_error = NULL`
             )
             .run(scope, now, now);

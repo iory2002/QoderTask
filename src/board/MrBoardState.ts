@@ -172,8 +172,9 @@ export class MrBoardState {
                 );
             }
             const state = this.store.fetchStateOf(scope);
-            if (state?.lastSuccessAt && (lastSuccess === null || state.lastSuccessAt > lastSuccess)) {
-                lastSuccess = state.lastSuccessAt;
+            if (state?.lastSuccessAt) {
+                // 取最旧的那个：任一仓库过期，整板就不能声称「刚同步」
+                lastSuccess = lastSuccess === null ? state.lastSuccessAt : Math.min(lastSuccess, state.lastSuccessAt);
             }
         }
 
@@ -445,6 +446,16 @@ export class MrBoardState {
 
             const approvals = await this.fetchApprovals(rows);
             this.persistSlices(slices, approvals);
+            if (gateScope) {
+                // repos[0] 失败但其他仓库成功时不会进 catch：在 Finally 之前把占位还回去，
+                // 否则 45 秒内的手动刷新会被自己的占位判成 busy。
+                const stamped = slices.some(
+                    (slice) => `gitlab-user:${slice.project}@${slice.branch}` === gateScope
+                );
+                if (!stamped) {
+                    this.store?.releaseScope(gateScope, '部分仓库取数失败');
+                }
+            }
             const result = classify({
                 candidates: rows.map(toCandidate),
                 viewerId: this.viewer.id,
@@ -504,7 +515,15 @@ export class MrBoardState {
         }
         for (const slice of slices) {
             const scope = `gitlab-user:${slice.project}@${slice.branch}`;
-            const mrRows: MrRow[] = slice.rows.map((row) => {
+            // 四条腿（待审/我提/已关闭×2）可能命中同一个 MR：入库前按 key 去重，
+            // 否则主键冲突会让整个切片回滚，库里永远停在上一次成功快照。
+            const unique = new Map<string, GitLabMrRow>();
+            for (const row of slice.rows) {
+                unique.set(mrKey(row.projectPath, row.iid), row);
+            }
+            const rowsToWrite = [...unique.values()];
+
+            const mrRows: MrRow[] = rowsToWrite.map((row) => {
                 const approval = approvals.get(mrKey(row.projectPath, row.iid));
                 return {
                     project: row.projectPath,
@@ -530,8 +549,13 @@ export class MrBoardState {
             });
 
             const approvalRows: ApprovalRow[] = [];
-            for (const row of slice.rows) {
-                const approval = approvals.get(mrKey(row.projectPath, row.iid));
+            const queried: number[] = [];
+            for (const row of rowsToWrite) {
+                const key = mrKey(row.projectPath, row.iid);
+                const approval = approvals.get(key);
+                if (row.state === 'opened' && !row.draft && approvals.has(key)) {
+                    queried.push(row.iid);
+                }
                 if (!approval) {
                     continue;
                 }
@@ -546,7 +570,13 @@ export class MrBoardState {
                 }
             }
 
-            this.store.replaceGitLab(scope, { project: slice.project, mrs: mrRows, approvals: approvalRows });
+            this.store.replaceGitLab(scope, {
+                project: slice.project,
+                mrs: mrRows,
+                approvals: approvalRows,
+                queriedApprovalIids: queried,
+                links: [],
+            });
         }
     }
 

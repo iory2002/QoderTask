@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS mr_approval (
   PRIMARY KEY (project, iid, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS mr_link (
+  project      TEXT NOT NULL,
+  iid          INTEGER NOT NULL,
+  issue_key    TEXT NOT NULL,
+  matched_by   TEXT NOT NULL,
+  fetched_scope TEXT NOT NULL,
+  seen_at      INTEGER NOT NULL,
+  PRIMARY KEY (project, iid, issue_key, fetched_scope)
+);
+
 CREATE TABLE IF NOT EXISTS build (
   job_path    TEXT NOT NULL,
   number      INTEGER NOT NULL,

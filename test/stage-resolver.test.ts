@@ -428,6 +428,24 @@ test('a card whose merge is not in the failing build is not flagged', () => {
     assert.equal(result.buildFailed, false);
 });
 
+test('a success whose ancestry is unknown keeps the failing build off the card', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = build(245, '2026-11-06T14:00:00Z', 'SUCCESS');
+    const failure = buildWithSha(246, '2026-11-07T04:07:00Z', 'FAILURE', 'ffff6666');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success, failure],
+        containment: new Map([[containmentKey(merged, failure), true]]),
+    });
+
+    // 成功构建到底包含不包含它，判不出来 → 不能标红
+    assert.equal(result.buildFailed, false);
+});
+
 test('an unknown ancestor relation never turns the board red', () => {
     const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
     const failure = build(246, '2026-11-07T04:07:00Z', 'FAILURE');

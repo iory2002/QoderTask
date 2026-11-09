@@ -4,22 +4,21 @@
 
 **Blocked by:** 07, 08（跟随者要靠"渲染读库"才能感知到别人的写入）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-抢占用一条原子语句完成，靠影响行数判断胜负（SQLite 没有行锁，这是唯一不会两边同时抢到的写法）：
+- [x] 按 scope 记录新鲜度与"正在取"占位；抢占只在"过期且空闲"时成功
+- [x] 跟随者每 3 秒感知一次变化（用零查询的提交版本号），变了才重读并重绘
+- [x] 手动刷新忽略新鲜度去抢占位；抢不到提示"另一个窗口正在刷新"，3 秒后重试，最多 3 次，不做请求队列
+- [x] 实现三个常量：新鲜度 50s、占位 45s、失败退避 15s
+- [x] 卡面"过期"标记由上次成功时间决定，而不是由本地是否尝试过决定
+- [x] 库不可写 → 退回单窗口直连 + 板内提示"共享库不可用"
+- [ ] 集成验证：两个窗口同时打开，观察一分钟内对外请求数与单窗口相当；关掉 A 后 B 在 45 秒内恢复自动刷新（需人工双开验证，代码路径已就位）
 
-```sql
-UPDATE fetch_state
-   SET attempting_until = :now + 45000, last_attempt_at = :now, owner = :me
- WHERE scope = :scope
-   AND attempting_until < :now
-   AND (last_success_at IS NULL OR last_success_at < :now - 50000);
-```
+## Comments
 
-- [ ] 按 scope 记录新鲜度与"正在取"占位；抢占只在"过期且空闲"时成功
-- [ ] 跟随者每 3 秒感知一次变化（用零查询的提交版本号），变了才重读并重绘
-- [ ] 手动刷新忽略新鲜度去抢占位；抢不到提示"另一个窗口正在刷新"，3 秒后重试，最多 3 次，不做请求队列
-- [ ] 实现三个常量：新鲜度 50s、占位 45s、失败退避 15s
-- [ ] 卡面"过期"标记由上次成功时间决定，而不是由本地是否尝试过决定
-- [ ] 库不可写 → 退回单窗口直连 + 板内提示"共享库不可用"
-- [ ] 集成验证：两个窗口同时打开，观察一分钟内对外请求数与单窗口相当；关掉 A 后 B 在 45 秒内恢复自动刷新
+- `FactStore.claimScope()` 就是研究里的那条原子 UPDATE，靠 `changes()` 定胜负；`releaseScope()` 失败时把 `attempting_until` 推到 now+15s，`last_success_at` 不动。
+- 两个板各自抢自己的主 scope（Jira：`jira:<boardId>`；MR：第一个 `gitlab-user:`），抢不到就读库、不发请求；`unavailable`（库不可写）照常取数，等于单窗口直连。
+- 跟随：3 秒一次的 `PRAGMA data_version`，变了才 `restoreFromStore()` → `publish(false)`（指纹没变就不重绘）。
+- 过期标记改为 `error !== null || now - lastSuccessAt > 50s`，本地尝试与否不再影响。
+- 测试：`test/fact-store.test.ts` 的抢占/占位/退避/只读四例。提交 `74afd65`。
+
