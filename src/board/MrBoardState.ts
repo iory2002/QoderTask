@@ -167,6 +167,8 @@ export class MrBoardState {
             const rows: GitLabMrRow[] = [];
             const reviewerKeys: string[] = [];
             const failures: string[] = [];
+            /** 有仓库被翻页上限截断：数据能显示，但不能假装完整 */
+            const truncations: string[] = [];
 
             // 每个 scope 条目四条腿并发：opened 用于两列，closed 只用于顶栏计数。
             // 单个仓库失败不影响其他仓库。
@@ -204,9 +206,20 @@ export class MrBoardState {
                             }),
                         ]);
                         reviewerKeys.push(
-                            ...reviewerOpened.map((row) => mrKey(entry.gitlabProject, row.iid))
+                            ...reviewerOpened.rows.map((row) => mrKey(entry.gitlabProject, row.iid))
                         );
-                        rows.push(...reviewerOpened, ...authorOpened, ...reviewerClosed, ...authorClosed);
+                        for (const batch of [reviewerOpened, authorOpened, reviewerClosed, authorClosed]) {
+                            if (batch.truncated) {
+                                truncations.push(`${entry.gitlabProject} @ ${entry.targetBranch}`);
+                                break;
+                            }
+                        }
+                        rows.push(
+                            ...reviewerOpened.rows,
+                            ...authorOpened.rows,
+                            ...reviewerClosed.rows,
+                            ...authorClosed.rows
+                        );
                     } catch (error) {
                         const described = describeError(error);
                         failures.push(`${entry.gitlabProject} @ ${entry.targetBranch}：${described.message}`);
@@ -222,6 +235,13 @@ export class MrBoardState {
                     level: 'error',
                     message: `部分仓库取数失败：${failure}`,
                     hint: '检查 pcBoard.mrBoard.scopes 与 gitlab.token',
+                });
+            }
+            for (const truncation of truncations) {
+                this.loadNotices.push({
+                    level: 'warn',
+                    message: `GitLab 取数被截断：${truncation} 超过 1000 条`,
+                    hint: '超过 1000 条的部分不会显示；结果可能不完整',
                 });
             }
 

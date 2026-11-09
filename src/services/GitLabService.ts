@@ -1,6 +1,7 @@
 import * as https from 'https';
 import * as http from 'http';
 import type { MrPerson } from '../models/MrBoard';
+import { fetchAllPages, PAGE_SIZE } from './paging';
 import { loadScrumBuddyConfig } from './ScrumBuddyConfig';
 import { createIntranetHttpsAgent, intranetTlsOptions } from './intranetTls';
 
@@ -68,6 +69,17 @@ export interface GitLabUser {
     name: string;
 }
 
+/** 一页都取完后的结果；truncated=true 表示服务端还有数据没取回来 */
+export interface GitLabMrBatch {
+    rows: GitLabMr[];
+    truncated: boolean;
+}
+
+export interface GitLabMrRowBatch {
+    rows: GitLabMrRow[];
+    truncated: boolean;
+}
+
 /** MR Board 取数用的一行事实（带作者与 reviewer，与交付阶段那套分开） */
 export interface GitLabMrRow {
     projectPath: string;
@@ -104,7 +116,7 @@ function personOf(raw: RawGitLabUser | undefined): MrPerson {
  * 不能跨轮命中，否则每两轮才有一次真正更新。
  */
 const CACHE_TTL_MS = 15_000;
-const listCache = new Map<string, { at: number; promise: Promise<GitLabMr[]> }>();
+const listCache = new Map<string, { at: number; promise: Promise<GitLabMrBatch> }>();
 const approvalsCache = new Map<string, { at: number; promise: Promise<GitLabApprovals | undefined> }>();
 
 /** 用户手动刷新时清掉，别让「刷新」拿到一分钟前的缓存 */
@@ -186,7 +198,7 @@ export class GitLabService {
         project: string,
         targetBranch: string,
         updatedAfterDays = 90
-    ): Promise<GitLabMr[]> {
+    ): Promise<GitLabMrBatch> {
         const key = `${project}@${targetBranch}@${updatedAfterDays}`;
         const cached = listCache.get(key);
         if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
@@ -211,27 +223,21 @@ export class GitLabService {
         project: string,
         targetBranch: string,
         updatedAfterDays: number
-    ): Promise<GitLabMr[]> {
+    ): Promise<GitLabMrBatch> {
         const updatedAfter = new Date(Date.now() - updatedAfterDays * 24 * 3600 * 1000).toISOString();
-        const rows: RawGitLabMr[] = [];
 
-        // 单页 100 条；大分支 90 天可能超一页，最多翻 3 页。
-        // 主分支上被截断会导致「已合入」的卡退回「未提交」，比多发两次请求糟得多。
-        for (let page = 1; page <= 3; page += 1) {
+        // 翻到不满一页为止，上限 10 页（1000 条）。主分支上被静默截断会让
+        // 已合入的卡退回「未提交」，比多几次请求糟得多；真到上限要告警。
+        const page = await fetchAllPages<RawGitLabMr>((pageNumber) => {
             const query =
                 `/api/v4/projects/${encodeURIComponent(project)}/merge_requests` +
                 `?state=all&target_branch=${encodeURIComponent(targetBranch)}` +
                 `&updated_after=${encodeURIComponent(updatedAfter)}` +
-                `&per_page=100&page=${page}&order_by=updated_at&sort=desc`;
+                `&per_page=${PAGE_SIZE}&page=${pageNumber}&order_by=updated_at&sort=desc`;
+            return this.request<RawGitLabMr[]>(query, 15000);
+        });
 
-            const chunk = await this.request<RawGitLabMr[]>(query, 15000);
-            rows.push(...chunk);
-            if (chunk.length < 100) {
-                break;
-            }
-        }
-
-        return rows.map((row) => ({
+        return { rows: page.rows.map((row) => ({
             iid: row.iid,
             state: row.state,
             targetBranch: row.target_branch,
@@ -242,7 +248,7 @@ export class GitLabService {
             mergeCommitSha: row.merge_commit_sha ?? undefined,
             webUrl: row.web_url,
             updatedAt: row.updated_at,
-        }));
+        })), truncated: page.truncated };
     }
 
     /** 当前 token 对应的用户。取不到 id 就不缓存，宁可直接失败 */
@@ -268,7 +274,7 @@ export class GitLabService {
      * MR Board 的列表：服务端按 reviewer / author 过滤，本地还要复核一次。
      *
      * opened 用于两列卡片；closed 只用于顶栏计数（merged 不拉取也不显示）。
-     * 翻页上限 2 页——个人队列超过 200 条时，先看最新的比看全量重要。
+     * 同样翻到不满一页为止：个人队列被截断会让人以为没有待审的 MR。
      */
     public async listMrsForUser(input: {
         project: string;
@@ -276,24 +282,18 @@ export class GitLabService {
         userId: number;
         role: 'reviewer' | 'author';
         state: 'opened' | 'closed';
-    }): Promise<GitLabMrRow[]> {
+    }): Promise<GitLabMrRowBatch> {
         const filter = input.role === 'reviewer' ? `reviewer_id=${input.userId}` : `author_id=${input.userId}`;
-        const rows: RawGitLabMr[] = [];
 
-        for (let page = 1; page <= 2; page += 1) {
+        const page = await fetchAllPages<RawGitLabMr>((pageNumber) => {
             const query =
                 `/api/v4/projects/${encodeURIComponent(input.project)}/merge_requests` +
                 `?state=${input.state}&target_branch=${encodeURIComponent(input.targetBranch)}` +
-                `&${filter}&per_page=100&page=${page}&order_by=updated_at&sort=desc`;
+                `&${filter}&per_page=${PAGE_SIZE}&page=${pageNumber}&order_by=updated_at&sort=desc`;
+            return this.request<RawGitLabMr[]>(query, 15000);
+        });
 
-            const chunk = await this.request<RawGitLabMr[]>(query, 15000);
-            rows.push(...chunk);
-            if (chunk.length < 100) {
-                break;
-            }
-        }
-
-        return rows.map((row) => ({
+        return { rows: page.rows.map((row) => ({
             projectPath: input.project,
             iid: row.iid,
             title: row.title ?? '',
@@ -307,7 +307,7 @@ export class GitLabService {
             draft: row.draft === true || row.work_in_progress === true,
             createdAt: row.created_at ?? '',
             updatedAt: row.updated_at,
-        }));
+        })), truncated: page.truncated };
     }
 
     /**

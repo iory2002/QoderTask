@@ -1,6 +1,7 @@
 import type { MrCard, MrPerson, MrReviewState } from '../models/MrBoard';
 import type { GitLabApprovals } from './GitLabService';
 import { extractJiraKeys } from './JiraKeyMatcher';
+import { epochOrZero } from './time';
 
 /** 列表接口归一化后的一行事实（两个仓库可能有同号 MR，key 必须带仓库） */
 export interface MrCandidate {
@@ -53,11 +54,6 @@ function isOpened(state: string): boolean {
     return state === 'opened';
 }
 
-function timeOf(iso: string): number {
-    const parsed = Date.parse(iso);
-    return Number.isNaN(parsed) ? 0 : parsed;
-}
-
 /** 标题 → 描述 → 源分支，与 Jira 看板的关联顺序一致 */
 function jiraKeysOf(candidate: MrCandidate, projects: string[]): string[] {
     for (const text of [candidate.title, candidate.description, candidate.sourceBranch]) {
@@ -101,7 +97,7 @@ function toCard(candidate: MrCandidate, approval: GitLabApprovals | undefined, s
 }
 
 function byUpdatedDesc(left: MrCard, right: MrCard): number {
-    const diff = timeOf(right.updatedAt) - timeOf(left.updatedAt);
+    const diff = epochOrZero(right.updatedAt) - epochOrZero(left.updatedAt);
     if (diff !== 0) {
         return diff;
     }

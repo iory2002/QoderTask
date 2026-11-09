@@ -1,4 +1,5 @@
 import type { BuildChannel, BuildFact, MrFact, Stage } from '../models/Board';
+import { epochOrZero } from './time';
 
 export interface StageInput {
     /** 该项目有 repo 条目 = 追踪；没有 = 不出徽章 */
@@ -52,14 +53,6 @@ function mrRank(mr: MrFact): number {
     return 0;
 }
 
-function timeOf(iso: string | undefined): number {
-    if (!iso) {
-        return 0;
-    }
-    const parsed = Date.parse(iso);
-    return Number.isNaN(parsed) ? 0 : parsed;
-}
-
 /** 阶段最高者优先；同阶段取 merged_at 最新 */
 export function pickCardMr(mrs: MrFact[]): MrFact | undefined {
     return [...mrs].sort((left, right) => {
@@ -67,7 +60,7 @@ export function pickCardMr(mrs: MrFact[]): MrFact | undefined {
         if (diff !== 0) {
             return diff;
         }
-        const mergedDiff = timeOf(right.mergedAt) - timeOf(left.mergedAt);
+        const mergedDiff = epochOrZero(right.mergedAt) - epochOrZero(left.mergedAt);
         if (mergedDiff !== 0) {
             return mergedDiff;
         }
@@ -144,7 +137,7 @@ export function resolveStage(input: StageInput): StageResult {
     evidence.push(`MR !${cardMr.iid}（${cardMr.state}，靠${source}关联）→ 目标分支 ${cardMr.targetBranch}`);
 
     if (cardMr.state === 'merged') {
-        const mergedAt = timeOf(cardMr.mergedAt);
+        const mergedAt = epochOrZero(cardMr.mergedAt);
         evidence.push(`合入时间 ${cardMr.mergedAt ?? '未知'}`);
 
         if (channel !== 'full') {

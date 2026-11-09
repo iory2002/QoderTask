@@ -466,7 +466,19 @@ export class BoardState {
                 }
 
                 try {
-                    const mrs = await gitlab.listTargetBranchMrs(group.repo.gitlabProject, group.repo.targetBranch);
+                    const batch = await gitlab.listTargetBranchMrs(
+                        group.repo.gitlabProject,
+                        group.repo.targetBranch
+                    );
+                    if (batch.truncated) {
+                        // 被截断的 MR 会以「找不到」的形式消失，卡片会退回「未提交」——必须说出来
+                        this.stageNotices.push({
+                            level: 'warn',
+                            message: `GitLab 取数被截断：${group.repo.gitlabProject} → ${group.repo.targetBranch} 90 天内超过 1000 条 MR`,
+                            hint: '部分已合入的卡片可能显示为「未提交」；缩小 pcBoard.repos 的范围后再看',
+                        });
+                    }
+                    const mrs = batch.rows;
                     const byKey = associateMrs(mrs, group.projects);
                     // 只给「当前看板卡片关联到的 MR」查审批：90 天窗口里的 opened MR
                     // 大多数与这个 sprint 无关，全查等于几十个串行的 /approvals。
