@@ -83,6 +83,12 @@ export interface MrRow {
     draft: boolean;
     hasConflicts: boolean | null;
     blockingDiscussionsResolved: boolean | null;
+    /** 列表接口返回的 reviewer id；MR 板恢复两列时要用 */
+    reviewerIds: number[];
+    webUrl: string | null;
+    /** null = 没查过 /approvals（未知），不是「未批准」 */
+    approved: boolean | null;
+    approvalsLeft: number | null;
 }
 
 export interface ApprovalRow {
@@ -112,6 +118,28 @@ export interface ColumnRow {
     type: string;
 }
 
+export interface BoardRow {
+    boardId: number;
+    columns: BoardColumn[];
+    rankField: string;
+    fetchedAt: number;
+}
+
+export interface SprintRow {
+    id: number;
+    name: string;
+    state: string;
+}
+
+export interface FetchStateRow {
+    scope: string;
+    lastSuccessAt: number | null;
+    lastAttemptAt: number | null;
+    attemptingUntil: number;
+    owner: string | null;
+    lastError: string | null;
+}
+
 /** 每个 job 只留最近 200 条构建：历史账本，不无限长 */
 export const BUILD_RETENTION = 200;
 
@@ -124,6 +152,18 @@ function fromNullableBool(value: unknown): boolean | null {
         return null;
     }
     return Number(value) === 1;
+}
+
+function parseIds(value: unknown): number[] {
+    if (typeof value !== 'string' || !value) {
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(value) as unknown;
+        return Array.isArray(parsed) ? parsed.map((id) => Number(id)).filter((id) => Number.isFinite(id)) : [];
+    } catch {
+        return [];
+    }
 }
 
 export class FactStore {
@@ -279,8 +319,9 @@ export class FactStore {
             const insertMr = this.db.prepare(
                 `INSERT INTO mr(project, iid, state, title, source_branch, target_branch, author_id, author_name,
                                 created_at, updated_at, merged_at, merge_commit_sha, draft, has_conflicts,
-                                blocking_discussions_resolved, fetched_scope, seen_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                                blocking_discussions_resolved, reviewer_ids, web_url, approved, approvals_left,
+                                fetched_scope, seen_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             );
             for (const mr of snapshot.mrs) {
                 insertMr.run(
@@ -299,6 +340,10 @@ export class FactStore {
                     mr.draft ? 1 : 0,
                     nullableBool(mr.hasConflicts),
                     nullableBool(mr.blockingDiscussionsResolved),
+                    JSON.stringify(mr.reviewerIds),
+                    mr.webUrl,
+                    mr.approved === null ? null : mr.approved ? 1 : 0,
+                    mr.approvalsLeft,
                     scope,
                     now
                 );
@@ -413,7 +458,7 @@ export class FactStore {
                 .prepare(
                     `SELECT project, iid, state, title, source_branch, target_branch, author_id, author_name,
                             created_at, updated_at, merged_at, merge_commit_sha, draft, has_conflicts,
-                            blocking_discussions_resolved
+                            blocking_discussions_resolved, reviewer_ids, web_url, approved, approvals_left
                        FROM mr WHERE fetched_scope = ? ORDER BY iid`
                 )
                 .all(scope)
@@ -433,6 +478,89 @@ export class FactStore {
                     draft: Number(row.draft) === 1,
                     hasConflicts: fromNullableBool(row.has_conflicts),
                     blockingDiscussionsResolved: fromNullableBool(row.blocking_discussions_resolved),
+                    reviewerIds: parseIds(row.reviewer_ids),
+                    webUrl: row.web_url === null ? null : String(row.web_url),
+                    approved: fromNullableBool(row.approved),
+                    approvalsLeft: row.approvals_left === null ? null : Number(row.approvals_left),
+                }))
+        );
+    }
+
+    public boardOf(boardId: number): BoardRow | null {
+        try {
+            const row = this.db
+                .prepare('SELECT board_id, columns_json, rank_field, fetched_at FROM board WHERE board_id = ?')
+                .get(boardId);
+            if (!row) {
+                return null;
+            }
+            return {
+                boardId: Number(row.board_id),
+                columns: JSON.parse(String(row.columns_json)) as BoardColumn[],
+                rankField: String(row.rank_field),
+                fetchedAt: Number(row.fetched_at),
+            };
+        } catch (error) {
+            console.warn('[fact-store] 读 board 失败', error);
+            return null;
+        }
+    }
+
+    /** 当前活跃 sprint；恢复渲染时用来填顶栏标题 */
+    public activeSprintOf(boardId: number): SprintRow | null {
+        try {
+            const row = this.db
+                .prepare(
+                    `SELECT id, name, state FROM sprint
+                      WHERE board_id = ? AND state = 'active' ORDER BY id DESC LIMIT 1`
+                )
+                .get(boardId);
+            return row ? { id: Number(row.id), name: String(row.name), state: String(row.state) } : null;
+        } catch (error) {
+            console.warn('[fact-store] 读 sprint 失败', error);
+            return null;
+        }
+    }
+
+    public fetchStateOf(scope: string): FetchStateRow | null {
+        try {
+            const row = this.db
+                .prepare(
+                    `SELECT scope, last_success_at, last_attempt_at, attempting_until, owner, last_error
+                       FROM fetch_state WHERE scope = ?`
+                )
+                .get(scope);
+            if (!row) {
+                return null;
+            }
+            return {
+                scope: String(row.scope),
+                lastSuccessAt: row.last_success_at === null ? null : Number(row.last_success_at),
+                lastAttemptAt: row.last_attempt_at === null ? null : Number(row.last_attempt_at),
+                attemptingUntil: Number(row.attempting_until),
+                owner: row.owner === null ? null : String(row.owner),
+                lastError: row.last_error === null ? null : String(row.last_error),
+            };
+        } catch (error) {
+            console.warn('[fact-store] 读 fetch_state 失败', error);
+            return null;
+        }
+    }
+
+    public approvalsOf(project: string, iid: number): ApprovalRow[] {
+        return this.read(() =>
+            this.db
+                .prepare(
+                    `SELECT project, iid, user_id, user_name, approved_at
+                       FROM mr_approval WHERE project = ? AND iid = ? ORDER BY user_id`
+                )
+                .all(project, iid)
+                .map((row) => ({
+                    project: String(row.project),
+                    iid: Number(row.iid),
+                    userId: Number(row.user_id),
+                    userName: row.user_name === null ? null : String(row.user_name),
+                    approvedAt: row.approved_at === null ? null : Number(row.approved_at),
                 }))
         );
     }

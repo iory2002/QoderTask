@@ -3,8 +3,11 @@ import type { MrBoardPayload, MrCard } from '../models/MrBoard';
 import { GitLabService, clearGitLabCaches, type GitLabApprovals, type GitLabMrRow, type GitLabUser } from '../services/GitLabService';
 import { classify, mrKey, type MrCandidate } from '../services/MrBoardResolver';
 import { countMrBadges, type BadgeCounts } from '../services/BadgeCounter';
+import { epochOf } from '../services/time';
 import { readBadgeConfig, readConfig, readMrConfig } from './config';
 import { ConfigError, describeError } from './errors';
+import { FactStore, type ApprovalRow, type MrRow } from './FactStore';
+import { approvalsFromStore, mrCandidatesFromStore, restoredFreshness } from './Restore';
 import { revisionOf } from './fingerprint';
 import { MrBoardPanel } from './MrBoardPanel';
 
@@ -36,6 +39,12 @@ export class MrBoardState {
     private viewer: GitLabUser | null = null;
 
     private readonly gitlab = new GitLabService();
+    /** 事实库；null = 不可用，界面照常用内存态 */
+    private readonly store: FactStore | null;
+
+    constructor(factsPath?: string) {
+        this.store = factsPath ? FactStore.open(factsPath) : null;
+    }
 
     public findMr(iid: number, projectPath: string): MrCard | undefined {
         return [...this.reviewQueue, ...this.myMrs].find(
@@ -94,8 +103,73 @@ export class MrBoardState {
             return;
         }
         this.started = true;
+        // 库里已有上一次成功的个人队列：先秒开，不等网络
+        if (this.restoreFromStore()) {
+            this.publish(true);
+            this.updateBadge();
+        }
         // 启动不用 force：两个看板同时开跑，共享缓存能把重复请求合成一次
         void this.refresh(false).finally(() => this.scheduleNext());
+    }
+
+    /**
+     * 从库里恢复上一次成功的个人队列并重新分类。
+     *
+     * 返回 false = 库里没有可用数据（首次运行 / 库不可用）。
+     */
+    public restoreFromStore(): boolean {
+        if (!this.store) {
+            return false;
+        }
+        const config = readMrConfig();
+        if (config.repos.length === 0) {
+            return false;
+        }
+        const viewerId = Number(this.store.meta('gitlab.viewer_id') ?? 0);
+        if (!viewerId) {
+            return false;
+        }
+
+        const candidates: MrCandidate[] = [];
+        const approvals = new Map<string, GitLabApprovals | undefined>();
+        let lastSuccess: number | null = null;
+
+        for (const entry of config.repos) {
+            const scope = `gitlab-user:${entry.gitlabProject}@${entry.targetBranch}`;
+            const rows = this.store.mrsOf(scope);
+            candidates.push(...mrCandidatesFromStore(rows));
+            for (const row of rows) {
+                if (row.state !== 'opened') {
+                    continue;
+                }
+                approvals.set(
+                    mrKey(row.project, row.iid),
+                    approvalsFromStore(this.store.approvalsOf(row.project, row.iid), row)
+                );
+            }
+            const state = this.store.fetchStateOf(scope);
+            if (state?.lastSuccessAt && (lastSuccess === null || state.lastSuccessAt > lastSuccess)) {
+                lastSuccess = state.lastSuccessAt;
+            }
+        }
+
+        if (candidates.length === 0) {
+            return false;
+        }
+
+        const result = classify({
+            candidates,
+            viewerId,
+            approvals,
+            jiraProjects: this.keyProjects(),
+        });
+        this.reviewQueue = result.reviewQueue;
+        this.myMrs = result.myMrs;
+        this.closedCount = result.closedCount;
+        this.freshness = restoredFreshness(lastSuccess);
+        this.notices = this.buildNotices();
+        console.log(`[mr-board] 从事实库恢复 待审=${this.reviewQueue.length}，我提交的=${this.myMrs.length}`);
+        return true;
     }
 
     /** WebView 重建后必须能拿到当前状态：指纹没变时也要重发一次 */
@@ -162,11 +236,14 @@ export class MrBoardState {
 
             if (!this.viewer) {
                 this.viewer = await this.gitlab.getCurrentUser();
+                this.store?.setMeta('gitlab.viewer_id', String(this.viewer.id));
             }
 
             const rows: GitLabMrRow[] = [];
             const reviewerKeys: string[] = [];
             const failures: string[] = [];
+            /** 每个 scope 条目自己的那一份快照，成功后整体写进库 */
+            const slices: Array<{ project: string; branch: string; rows: GitLabMrRow[] }> = [];
             /** 有仓库被翻页上限截断：数据能显示，但不能假装完整 */
             const truncations: string[] = [];
 
@@ -220,6 +297,16 @@ export class MrBoardState {
                             ...reviewerClosed.rows,
                             ...authorClosed.rows
                         );
+                        slices.push({
+                            project: entry.gitlabProject,
+                            branch: entry.targetBranch,
+                            rows: [
+                                ...reviewerOpened.rows,
+                                ...authorOpened.rows,
+                                ...reviewerClosed.rows,
+                                ...authorClosed.rows,
+                            ],
+                        });
                     } catch (error) {
                         const described = describeError(error);
                         failures.push(`${entry.gitlabProject} @ ${entry.targetBranch}：${described.message}`);
@@ -246,6 +333,7 @@ export class MrBoardState {
             }
 
             const approvals = await this.fetchApprovals(rows);
+            this.persistSlices(slices, approvals);
             const result = classify({
                 candidates: rows.map(toCandidate),
                 viewerId: this.viewer.id,
@@ -282,6 +370,67 @@ export class MrBoardState {
                 { level: 'error', message: described.message, hint: described.hint },
                 ...this.buildNotices(),
             ];
+        }
+    }
+
+    /**
+     * MR 板的个人切片入库。
+     *
+     * 与 Jira 板写的分支全量用不同 scope（`gitlab-user:`）：两条查询拿到的集合不同，
+     * 写进同一个 scope 会互相覆盖。
+     */
+    private persistSlices(
+        slices: Array<{ project: string; branch: string; rows: GitLabMrRow[] }>,
+        approvals: Map<string, GitLabApprovals | undefined>
+    ): void {
+        if (!this.store) {
+            return;
+        }
+        for (const slice of slices) {
+            const scope = `gitlab-user:${slice.project}@${slice.branch}`;
+            const mrRows: MrRow[] = slice.rows.map((row) => {
+                const approval = approvals.get(mrKey(row.projectPath, row.iid));
+                return {
+                    project: row.projectPath,
+                    iid: row.iid,
+                    state: row.state,
+                    title: row.title,
+                    sourceBranch: row.sourceBranch,
+                    targetBranch: row.targetBranch,
+                    authorId: row.author.id,
+                    authorName: row.author.name || row.author.username || null,
+                    createdAt: epochOf(row.createdAt),
+                    updatedAt: epochOf(row.updatedAt),
+                    mergedAt: null,
+                    mergeCommitSha: null,
+                    draft: row.draft,
+                    hasConflicts: row.hasConflicts,
+                    blockingDiscussionsResolved: row.blockingDiscussionsResolved,
+                    reviewerIds: row.reviewerIds,
+                    webUrl: row.url,
+                    approved: approval?.approved ?? null,
+                    approvalsLeft: approval?.approvalsLeft ?? null,
+                };
+            });
+
+            const approvalRows: ApprovalRow[] = [];
+            for (const row of slice.rows) {
+                const approval = approvals.get(mrKey(row.projectPath, row.iid));
+                if (!approval) {
+                    continue;
+                }
+                for (const person of approval.approvedByPeople) {
+                    approvalRows.push({
+                        project: row.projectPath,
+                        iid: row.iid,
+                        userId: person.id,
+                        userName: person.name || person.username || null,
+                        approvedAt: approval.approvedAtById?.[String(person.id)] ?? null,
+                    });
+                }
+            }
+
+            this.store.replaceGitLab(scope, { project: slice.project, mrs: mrRows, approvals: approvalRows });
         }
     }
 

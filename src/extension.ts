@@ -20,7 +20,7 @@ export function activate(context: vscode.ExtensionContext) {
     try {
         const factsPath = ensureFactsPath(context.globalStorageUri.fsPath);
         boardState = new BoardState(factsPath);
-        mrBoardState = new MrBoardState();
+        mrBoardState = new MrBoardState(factsPath);
         storageRoot = context.storageUri ?? context.globalStorageUri;
 
         const openBoard = () => {

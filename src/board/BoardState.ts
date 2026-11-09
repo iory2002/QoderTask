@@ -20,6 +20,7 @@ import { stalledAfterMerge } from '../services/StalledAfterMerge';
 import { epochOf } from '../services/time';
 import { BoardPanel } from './BoardPanel';
 import { FactStore, type ApprovalRow, type MrRow } from './FactStore';
+import { approvalsFromStore, cardFromIssue, gitLabMrsFromStore, restoredFreshness } from './Restore';
 import { ConfigError, describeError } from './errors';
 import { revisionOf } from './fingerprint';
 import { readBadgeConfig, readConfig, type BoardConfig, type RepoConfig } from './config';
@@ -157,6 +158,11 @@ export class BoardState {
             return;
         }
         this.started = true;
+        // 库里已有上一次成功的事实：先秒开一屏，不等网络
+        if (this.restoreFromStore()) {
+            this.publish(true);
+            this.updateBadge();
+        }
         // 启动不用 force：两个看板同时开跑，共享缓存能把重复请求合成一次
         void this.refresh(false).finally(() => this.scheduleNext());
     }
@@ -229,6 +235,7 @@ export class BoardState {
             // 身份用于本地过滤「只看我的」；拉一次就缓存，不每轮都问
             if (!this.viewer) {
                 this.viewer = await this.jira.getMyself();
+                this.store?.setMeta('jira.viewer_name', this.viewer.name);
             }
 
             this.cards = this.sprint ? await this.fetchCards(this.sprint) : [];
@@ -396,14 +403,7 @@ export class BoardState {
      */
     private async applyStages(cards: BoardCard[], config: BoardConfig): Promise<void> {
         this.stageNotices = [];
-        const repoByProject = new Map<string, RepoConfig>();
-        for (const repo of config.repos) {
-            for (const project of repo.jiraProjects) {
-                if (config.projects.includes(project)) {
-                    repoByProject.set(project, repo);
-                }
-            }
-        }
+        const repoByProject = this.repoByProject(config);
         if (repoByProject.size === 0) {
             return;
         }
@@ -570,6 +570,22 @@ export class BoardState {
             }
         }
 
+        this.applyResolvedStages(cards, config, repoByProject, factsByRepo, configured);
+    }
+
+    /**
+     * 事实 → 阶段（纯计算，不再取数）。
+     *
+     * 取数路径与「从库恢复」路径共用这一段，保证两个入口走的是同一条
+     * 「读事实 → 现算 → 渲染」，也不会出现一份缓存结论。
+     */
+    private applyResolvedStages(
+        cards: BoardCard[],
+        config: BoardConfig,
+        repoByProject: Map<string, RepoConfig>,
+        factsByRepo: Map<string, RepoFacts>,
+        gitlabConfigured: boolean
+    ): void {
         const resolved = new Map<string, StageResult>();
 
         // 类型决定它算不算「写代码的工作」：Task / Sub-task 没有 MR 时不报「未提交」
@@ -586,7 +602,7 @@ export class BoardState {
                 card,
                 repoByProject,
                 factsByRepo,
-                configured,
+                gitlabConfigured,
                 config.buildCheckIssueTypes
             );
             resolved.set(card.key, result);
@@ -622,13 +638,121 @@ export class BoardState {
                 card,
                 repoByProject,
                 factsByRepo,
-                configured,
+                gitlabConfigured,
                 config.buildCheckIssueTypes,
                 inherited
             );
             resolved.set(card.key, result);
             this.applyResult(card, result, mrs);
         }
+    }
+
+    private repoByProject(config: BoardConfig): Map<string, RepoConfig> {
+        const repoByProject = new Map<string, RepoConfig>();
+        for (const repo of config.repos) {
+            for (const project of repo.jiraProjects) {
+                if (config.projects.includes(project)) {
+                    repoByProject.set(project, repo);
+                }
+            }
+        }
+        return repoByProject;
+    }
+
+    /**
+     * 从库里恢复上一次成功的快照并现算阶段。
+     *
+     * 返回 false = 库里没有可用数据，调用方继续等网络。
+     * 这里不发任何请求，所以拿不到祖先判定，只能退回时间窗（详情会标「推断」）。
+     */
+    public restoreFromStore(): boolean {
+        if (!this.store) {
+            return false;
+        }
+        const config = readConfig();
+        const scope = `jira:${config.boardId}`;
+        const board = this.store.boardOf(config.boardId);
+        const issues = this.store.issuesOf(scope);
+        if (!board || issues.length === 0) {
+            return false;
+        }
+
+        this.columns = board.columns;
+        this.rankField = board.rankField;
+        const sprint = this.store.activeSprintOf(config.boardId);
+        this.sprint = sprint ? { id: sprint.id, name: sprint.name, state: sprint.state } : null;
+
+        const viewerName = this.store.meta('jira.viewer_name');
+        this.cards = issues.map((row) =>
+            cardFromIssue(row, board.columns, viewerName, (key) => this.jira.browseUrl(key))
+        );
+
+        const repoByProject = this.repoByProject(config);
+        const factsByRepo = new Map<string, RepoFacts>();
+        for (const repo of new Set(repoByProject.values())) {
+            const id = `${repo.gitlabProject}@${repo.targetBranch}`;
+            const mrRows = this.store.mrsOf(`gitlab:${id}`);
+            const mrs = gitLabMrsFromStore(mrRows);
+
+            const approvals = new Map<number, GitLabApprovals | undefined>();
+            for (const row of mrRows) {
+                if (row.state !== 'opened') {
+                    continue;
+                }
+                approvals.set(row.iid, approvalsFromStore(this.store.approvalsOf(row.project, row.iid), row));
+            }
+
+            const facts = new Map<string, MrFact[]>();
+            const projects = [...config.projects, ...repo.jiraProjects];
+            for (const [key, associated] of associateMrs(mrs, projects)) {
+                facts.set(
+                    key,
+                    toMrFacts(associated).map((fact) => {
+                        if (fact.state !== 'opened') {
+                            return fact;
+                        }
+                        const approval = approvals.get(fact.iid);
+                        return approval === undefined
+                            ? { ...fact, approvalsKnown: false }
+                            : {
+                                  ...fact,
+                                  approved: approval.approved,
+                                  approvedBy: approval.approvedBy,
+                                  approvalsLeft: approval.approvalsLeft,
+                                  approvalsKnown: true,
+                              };
+                    })
+                );
+            }
+
+            const builds: BuildFact[] = repo.jenkinsJobPath
+                ? this.store.buildsOf(repo.jenkinsJobPath).map((row) => ({
+                      number: row.number,
+                      result: row.result,
+                      timestamp: row.startedAt,
+                      branch: repo.targetBranch,
+                      url: row.url ?? '',
+                      sha: row.sha ?? undefined,
+                  }))
+                : [];
+
+            factsByRepo.set(id, {
+                gitlabOk: true,
+                buildsOk: true,
+                byKey: facts,
+                builds,
+                containment: new Map(),
+                newlyIntroduced: 0,
+            });
+        }
+
+        this.applyResolvedStages(this.cards, config, repoByProject, factsByRepo, true);
+        this.freshness = restoredFreshness(this.store.lastSuccessAt(scope));
+        this.notices = this.buildNotices();
+        console.log(`[jira-board] 从事实库恢复 ${this.cards.length} 张卡（上一次成功 ${new Date(
+            this.freshness.lastSuccessAt ?? 0
+        ).toLocaleTimeString()}）`);
+        return true;
     }
 
     private async fetchApprovals(
@@ -739,6 +863,11 @@ export class BoardState {
             draft: false,
             hasConflicts: mr.hasConflicts,
             blockingDiscussionsResolved: mr.blockingDiscussionsResolved,
+            // 分支全量这条链不关心 reviewer，MR 板自己那份切片才写
+            reviewerIds: [],
+            webUrl: mr.webUrl,
+            approved: approvals.get(mr.iid)?.approved ?? null,
+            approvalsLeft: approvals.get(mr.iid)?.approvalsLeft ?? null,
         }));
 
         const approvalRows: ApprovalRow[] = [];

@@ -65,9 +65,15 @@ CREATE TABLE IF NOT EXISTS mr (
   draft        INTEGER NOT NULL DEFAULT 0,
   has_conflicts INTEGER,
   blocking_discussions_resolved INTEGER,
+  reviewer_ids TEXT,
+  web_url      TEXT,
+  -- 审批结论也是服务端事实：离线恢复要能现算阶段
+  approved     INTEGER,
+  approvals_left INTEGER,
   fetched_scope TEXT NOT NULL,
   seen_at      INTEGER NOT NULL,
-  PRIMARY KEY (project, iid)
+  -- 同一个 MR 可能被两个 scope 各写一份：分支全量（Jira 板）与个人切片（MR 板）
+  PRIMARY KEY (project, iid, fetched_scope)
 );
 CREATE INDEX IF NOT EXISTS idx_mr_scope ON mr(fetched_scope);
 

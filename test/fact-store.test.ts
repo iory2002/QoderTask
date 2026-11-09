@@ -157,6 +157,55 @@ test('writing to a closed database never throws at the caller', () => {
     rmSync(dir, { recursive: true, force: true });
 });
 
+test('a gitlab scope keeps its mr rows and approval snapshot', () => {
+    withStore((store) => {
+        const scope = 'gitlab:group/repo@nexus/dev/7.10.x';
+        const replaced = store.replaceGitLab(scope, {
+            project: 'group/repo',
+            mrs: [
+                {
+                    project: 'group/repo',
+                    iid: 3786,
+                    state: 'opened',
+                    title: 'NEX2-1 fix',
+                    sourceBranch: 'bug-1',
+                    targetBranch: 'nexus/dev/7.10.x',
+                    authorId: 7,
+                    authorName: 'Alice',
+                    createdAt: 1_700_000_000_000,
+                    updatedAt: 1_700_000_100_000,
+                    mergedAt: null,
+                    mergeCommitSha: null,
+                    draft: false,
+                    hasConflicts: true,
+                    blockingDiscussionsResolved: false,
+                    reviewerIds: [42],
+                    webUrl: 'https://gitlab/!3786',
+                    approved: true,
+                    approvalsLeft: 0,
+                },
+            ],
+            approvals: [
+                { project: 'group/repo', iid: 3786, userId: 42, userName: 'Bob', approvedAt: 1_700_000_200_000 },
+            ],
+        });
+
+        assert.equal(replaced, true);
+        const [row] = store.mrsOf(scope);
+        assert.equal(row.iid, 3786);
+        assert.equal(row.hasConflicts, true);
+        assert.equal(row.blockingDiscussionsResolved, false);
+        assert.deepEqual(row.reviewerIds, [42]);
+        assert.equal(row.approved, true);
+        assert.equal(row.approvalsLeft, 0);
+        assert.equal(row.createdAt, 1_700_000_000_000);
+
+        const approvals = store.approvalsOf('group/repo', 3786);
+        assert.equal(approvals.length, 1);
+        assert.equal(approvals[0].approvedAt, 1_700_000_200_000);
+    });
+});
+
 test('derived state is never persisted', () => {
     withStore((store) => {
         const columns = store.columnsOf('issue').map((column) => column.name);
