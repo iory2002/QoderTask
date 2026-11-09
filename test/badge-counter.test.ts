@@ -25,6 +25,7 @@ function card(overrides: Partial<BoardCard> & { key: string }): BoardCard {
         stage: null,
         buildFailed: false,
         buildChannel: 'none',
+        mergedDaysAgo: null,
         mrs: [],
         evidence: [],
         url: '',

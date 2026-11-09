@@ -51,6 +51,10 @@ export function DetailPanel({
                 <div class="dlg-body">
                     <div class="title" style="cursor:auto">{card.summary}</div>
 
+                    {card.mergedDaysAgo !== null ? (
+                        <div class="stall">合入后 {card.mergedDaysAgo} 天未推进</div>
+                    ) : null}
+
                     <h4>阶段推导依据</h4>
                     {card.stage === null ? (
                         <div class="warn">

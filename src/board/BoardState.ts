@@ -15,6 +15,7 @@ import { JenkinsService } from '../services/JenkinsService';
 import { associateMrs, toMrFacts } from '../services/MrAssociation';
 import { countJiraBadges, type BadgeCounts } from '../services/BadgeCounter';
 import { buildChecksApplyTo, resolveStage, type StageResult } from '../services/DeliveryStageResolver';
+import { stalledAfterMerge } from '../services/StalledAfterMerge';
 import { BoardPanel } from './BoardPanel';
 import { ConfigError, describeError } from './errors';
 import { revisionOf } from './fingerprint';
@@ -370,6 +371,7 @@ export class BoardState {
             stage: null,
             buildFailed: false,
             buildChannel: 'none',
+            mergedDaysAgo: null,
             mrs: [],
             evidence: [],
             url: this.jira.browseUrl(issue.key),
@@ -641,6 +643,9 @@ export class BoardState {
         card.build = result.build;
         card.evidence = result.evidence;
         card.mrs = mrs.map((mr) => ({ ...mr, isCardMr: mr.iid === result.cardMr?.iid }));
+        // 子任务自己没有 MR时，用继承来的那个算合入时长
+        const forStall = card.mrs.length > 0 ? card.mrs : result.cardMr ? [result.cardMr] : [];
+        card.mergedDaysAgo = stalledAfterMerge(forStall, Date.now())?.days ?? null;
     }
 
     private buildNotices(): BoardNotice[] {

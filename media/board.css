@@ -170,6 +170,8 @@ dialog::backdrop { background: rgba(20, 24, 32, .35); }
 .field .err { color: #ef4444; font-size: 11px; margin-top: 3px; }
 .req { color: #ef4444; }
 .warn { background: #fff7e6; border: 1px solid #f5c06a; border-radius: 6px; padding: 8px 10px; font-size: 12px; color: #8a5a00; }
+/* 合入后长时间未推进：只出现在详情，不占卡面 */
+.stall { background: #fff7e6; border: 1px solid #f5c06a; border-radius: 6px; padding: 6px 10px; font-size: 12px; color: #8a5a00; font-weight: 600; }
 .warn ul { margin: 6px 0 0; padding-left: 18px; }
 .hint { font-size: 12px; color: var(--muted); }
 

@@ -80,6 +80,11 @@ export interface BoardCard {
     codeWork?: boolean;
     buildFailed: boolean;
     buildChannel: BuildChannel;
+    /**
+     * 最早一次合入距今的天数；未合入 / 取数失败 / 未到阈值都是 null。
+     * 只在详情里用来写「合入后 N 天未推进」，不占卡面。
+     */
+    mergedDaysAgo: number | null;
     /** 该 key 关联到的全部 MR，按阶段降序 */
     mrs: MrFact[];
     build?: BuildFact;
