@@ -28,6 +28,16 @@ export interface MrCard {
     approvalsLeft: number | null;
     /** false = /approvals 取数失败，此时不许推断「未审」 */
     approvalsKnown: boolean;
+    /**
+     * 合并冲突。null = 列表接口没给这个字段（未知），绝不等价于 false。
+     * 有冲突要上卡面：它是唯一「不点开也知道必须动手」的信号。
+     */
+    hasConflicts: boolean | null;
+    /**
+     * 阻塞性讨论是否全部解决。null = 未知；false = 还有未解决讨论。
+     * 只进详情：多数时候是在等作者回复，上卡面会变成刷不完的红点。
+     */
+    blockingDiscussionsResolved: boolean | null;
     createdAt: string;
     updatedAt: string;
     reviewState: MrReviewState;

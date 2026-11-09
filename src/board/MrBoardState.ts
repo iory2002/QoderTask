@@ -382,6 +382,8 @@ function toCandidate(row: GitLabMrRow): MrCandidate {
         author: row.author,
         reviewerIds: row.reviewerIds,
         draft: row.draft,
+        hasConflicts: row.hasConflicts,
+        blockingDiscussionsResolved: row.blockingDiscussionsResolved,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
     };

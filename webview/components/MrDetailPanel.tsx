@@ -54,6 +54,12 @@ export function MrDetailPanel({
                             <dd>{card.author.name || card.author.username}</dd>
                             <dt>批准人</dt>
                             <dd>{describeApprovers(card)}</dd>
+                            <dt>合并冲突</dt>
+                            <dd class={card.hasConflicts === true ? 'fact-bad' : undefined}>
+                                {describeConflicts(card)}
+                            </dd>
+                            <dt>未解决讨论</dt>
+                            <dd>{describeDiscussions(card)}</dd>
                             <dt>分支</dt>
                             <dd>
                                 {card.sourceBranch} → {card.targetBranch}
@@ -123,6 +129,27 @@ function describeApprovers(card: MrCard): string {
     }
     const names = card.approvedBy.map((person) => person.name || person.username).join('、');
     return card.approvalsLeft ? `${names}（还差 ${card.approvalsLeft} 个批准）` : names;
+}
+
+function describeConflicts(card: MrCard): string {
+    if (card.hasConflicts === true) {
+        return '有冲突，需要先解决';
+    }
+    if (card.hasConflicts === false) {
+        return '无冲突';
+    }
+    return '未知（列表接口未返回）';
+}
+
+function describeDiscussions(card: MrCard): string {
+    if (card.blockingDiscussionsResolved === false) {
+        return '还有未解决的讨论';
+    }
+    if (card.blockingDiscussionsResolved === true) {
+        return '讨论已全部解决';
+    }
+    // 条数需要额外请求 /discussions；这张票不允许新增请求，所以只能说到「有没有」
+    return '未知（列表接口未返回）';
 }
 
 function formatTime(iso: string): string {

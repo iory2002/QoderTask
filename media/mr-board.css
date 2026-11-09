@@ -24,6 +24,10 @@
 /* 徽章沿用 .stage 的配色；这里只保证「审批未知」的虚线边框足够显眼 */
 .mr-card .stage { white-space: nowrap; }
 
+/* card 上唯一需要立刻动手的信号 */
+.mr-conflict { color: #dc2626; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.fact-bad { color: #dc2626; font-weight: 600; }
+
 /* ---------- 右键菜单 ---------- */
 .ctx-menu {
   position: fixed; z-index: 60;

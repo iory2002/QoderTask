@@ -44,6 +44,8 @@ function mr(iid: number, reviewState: MrReviewState): MrCard {
         approvedBy: [],
         approvalsLeft: null,
         approvalsKnown: true,
+        hasConflicts: null,
+        blockingDiscussionsResolved: null,
         createdAt: '',
         updatedAt: '',
         reviewState,

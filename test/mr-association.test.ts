@@ -15,6 +15,8 @@ function mr(overrides: Partial<GitLabMr> & { iid: number }): GitLabMr {
         description: '',
         webUrl: `https://gitlab/!${overrides.iid}`,
         updatedAt: '2026-11-06T08:48:00Z',
+        hasConflicts: null,
+        blockingDiscussionsResolved: null,
         ...overrides,
     };
 }

@@ -36,6 +36,9 @@ interface RawGitLabMr {
     reviewers?: RawGitLabUser[];
     draft?: boolean;
     work_in_progress?: boolean;
+    /** 列表接口白送的信号：有冲突 / 阻塞讨论是否全部解决 */
+    has_conflicts?: boolean | null;
+    blocking_discussions_resolved?: boolean | null;
 }
 
 /** 只读通道里的 MR 事实 */
@@ -50,6 +53,9 @@ export interface GitLabMr {
     mergeCommitSha?: string;
     webUrl: string;
     updatedAt: string;
+    /** null = 服务端没返回；不是 false */
+    hasConflicts: boolean | null;
+    blockingDiscussionsResolved: boolean | null;
 }
 
 export interface GitLabApprovals {
@@ -93,8 +99,14 @@ export interface GitLabMrRow {
     author: MrPerson;
     reviewerIds: number[];
     draft: boolean;
+    hasConflicts: boolean | null;
+    blockingDiscussionsResolved: boolean | null;
     createdAt: string;
     updatedAt: string;
+}
+
+function nullableBool(value: boolean | null | undefined): boolean | null {
+    return typeof value === 'boolean' ? value : null;
 }
 
 function personOf(raw: RawGitLabUser | undefined): MrPerson {
@@ -248,6 +260,8 @@ export class GitLabService {
             mergeCommitSha: row.merge_commit_sha ?? undefined,
             webUrl: row.web_url,
             updatedAt: row.updated_at,
+            hasConflicts: nullableBool(row.has_conflicts),
+            blockingDiscussionsResolved: nullableBool(row.blocking_discussions_resolved),
         })), truncated: page.truncated };
     }
 
@@ -305,6 +319,8 @@ export class GitLabService {
             author: personOf(row.author),
             reviewerIds: (row.reviewers ?? []).map((reviewer) => Number(reviewer.id ?? 0)).filter(Boolean),
             draft: row.draft === true || row.work_in_progress === true,
+            hasConflicts: nullableBool(row.has_conflicts),
+            blockingDiscussionsResolved: nullableBool(row.blocking_discussions_resolved),
             createdAt: row.created_at ?? '',
             updatedAt: row.updated_at,
         })), truncated: page.truncated };

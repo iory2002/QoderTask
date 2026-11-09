@@ -71,6 +71,11 @@ export function MrCardView({
         >
             <div class="row1">
                 <span class="mr-iid">!{card.iid}</span>
+                {card.hasConflicts === true ? (
+                    <span class="mr-conflict" title="有合并冲突，需要先解决">
+                        有冲突
+                    </span>
+                ) : null}
                 {showRepo ? (
                     <span class="mr-repo" title={card.projectPath}>
                         {shortRepo(card.projectPath)}

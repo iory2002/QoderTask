@@ -21,6 +21,8 @@ function candidate(overrides: Partial<MrCandidate> & { iid: number }): MrCandida
         draft: false,
         createdAt: '2026-11-01T00:00:00Z',
         updatedAt: '2026-11-05T00:00:00Z',
+        hasConflicts: null,
+        blockingDiscussionsResolved: null,
         ...overrides,
     };
 }
@@ -210,3 +212,36 @@ test('the same iid in two repositories does not collide', () => {
         ['group/repo-a', 'group/repo-b']
     );
 });
+
+test('conflicts reach the card: true stays true, false stays false', () => {
+    const result = run({
+        candidates: [candidate({ iid: 70, hasConflicts: true }), candidate({ iid: 71, hasConflicts: false })],
+    });
+
+    const byIid = new Map(result.reviewQueue.map((card) => [card.iid, card]));
+    assert.equal(byIid.get(70)?.hasConflicts, true);
+    assert.equal(byIid.get(71)?.hasConflicts, false);
+});
+
+test('a missing conflicts field is unknown, not false', () => {
+    const result = run({ candidates: [candidate({ iid: 72, hasConflicts: null })] });
+
+    assert.equal(result.reviewQueue[0].hasConflicts, null);
+    assert.notEqual(result.reviewQueue[0].hasConflicts, false);
+});
+
+test('blocking discussions resolved is three-valued: true, false, unknown', () => {
+    const result = run({
+        candidates: [
+            candidate({ iid: 80, blockingDiscussionsResolved: false }),
+            candidate({ iid: 81, blockingDiscussionsResolved: true }),
+            candidate({ iid: 82, blockingDiscussionsResolved: null }),
+        ],
+    });
+
+    const byIid = new Map(result.reviewQueue.map((card) => [card.iid, card]));
+    assert.equal(byIid.get(80)?.blockingDiscussionsResolved, false);
+    assert.equal(byIid.get(81)?.blockingDiscussionsResolved, true);
+    assert.equal(byIid.get(82)?.blockingDiscussionsResolved, null);
+});
+

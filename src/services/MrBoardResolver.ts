@@ -16,6 +16,9 @@ export interface MrCandidate {
     author: MrPerson;
     reviewerIds: number[];
     draft: boolean;
+    /** null = 列表接口没返回这个字段；不能当 false */
+    hasConflicts: boolean | null;
+    blockingDiscussionsResolved: boolean | null;
     createdAt: string;
     updatedAt: string;
 }
@@ -89,6 +92,8 @@ function toCard(candidate: MrCandidate, approval: GitLabApprovals | undefined, s
         approvedBy: approval?.approvedByPeople ?? [],
         approvalsLeft: approval?.approvalsLeft ?? null,
         approvalsKnown: approval !== undefined,
+        hasConflicts: candidate.hasConflicts,
+        blockingDiscussionsResolved: candidate.blockingDiscussionsResolved,
         createdAt: candidate.createdAt,
         updatedAt: candidate.updatedAt,
         reviewState: state,
