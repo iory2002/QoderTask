@@ -41,9 +41,22 @@ export class MrBoardState {
     private readonly gitlab = new GitLabService();
     /** 事实库；null = 不可用，界面照常用内存态 */
     private readonly store: FactStore | null;
+    /** 库的病况（损坏重建 / 更高版本只读）：只在板内说一次 */
+    private readonly storeNotice: BoardNotice | null;
 
     constructor(factsPath?: string) {
-        this.store = factsPath ? FactStore.open(factsPath) : null;
+        const opened = factsPath ? FactStore.openWithStatus(factsPath) : null;
+        this.store = opened?.store ?? null;
+        this.storeNotice = opened?.message
+            ? {
+                  level: 'warn',
+                  message: opened.message,
+                  hint:
+                      opened.status === 'readonly'
+                          ? '库是由更新版本的扩展写的；升级扩展后会自动恢复写入'
+                          : undefined,
+              }
+            : null;
     }
 
     public findMr(iid: number, projectPath: string): MrCard | undefined {
@@ -462,6 +475,9 @@ export class MrBoardState {
     private buildNotices(): BoardNotice[] {
         const config = readMrConfig();
         const notices: BoardNotice[] = [...this.loadNotices];
+        if (this.storeNotice) {
+            notices.push(this.storeNotice);
+        }
         if (config.repos.length === 0) {
             notices.push({
                 level: 'warn',

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -204,6 +204,72 @@ test('a gitlab scope keeps its mr rows and approval snapshot', () => {
         assert.equal(approvals.length, 1);
         assert.equal(approvals[0].approvedAt, 1_700_000_200_000);
     });
+});
+
+test('an older database is migrated, and a .bak is left behind', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'facts-'));
+    const path = join(dir, 'facts.sqlite');
+    const sqlite = loadSqlite();
+    assert.ok(sqlite);
+
+    // 造一个「v0 但有内容」的库：迁移前必须能备份
+    const raw = new sqlite.DatabaseSync(path);
+    raw.exec('CREATE TABLE old_marker(x INTEGER)');
+    raw.exec('PRAGMA user_version = 0');
+    raw.close();
+
+    const result = FactStore.openWithStatus(path);
+    assert.equal(result.status, 'ok');
+    assert.ok(result.store);
+    assert.equal(result.store.schemaVersion(), 1);
+    assert.deepEqual(result.store.columnsOf('old_marker').map((column) => column.name), ['x']);
+    assert.equal(existsSync(`${path}.bak`), true);
+
+    result.store.close();
+    rmSync(dir, { recursive: true, force: true });
+});
+
+test('a corrupt database is renamed and rebuilt, and the board is told', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'facts-'));
+    const path = join(dir, 'facts.sqlite');
+    writeFileSync(path, 'this is definitely not a sqlite database');
+
+    const result = FactStore.openWithStatus(path);
+    assert.equal(result.status, 'recovered');
+    assert.match(result.message ?? '', /历史已重置/);
+    assert.ok(result.store);
+    assert.ok(
+        readdirSync(dir).some((name) => name.includes('.corrupt-')),
+        'the broken file must be kept, not deleted'
+    );
+
+    // 重建后的库能正常干活
+    assert.equal(result.store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })])), true);
+    assert.deepEqual(result.store.issuesOf(SCOPE).map((issue) => issue.key), ['NEX2-1']);
+
+    result.store.close();
+    rmSync(dir, { recursive: true, force: true });
+});
+
+test('a database from a newer version is opened read-only and never migrated down', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'facts-'));
+    const path = join(dir, 'facts.sqlite');
+    const sqlite = loadSqlite();
+    assert.ok(sqlite);
+
+    const raw = new sqlite.DatabaseSync(path);
+    raw.exec('PRAGMA user_version = 99');
+    raw.close();
+
+    const result = FactStore.openWithStatus(path);
+    assert.equal(result.status, 'readonly');
+    assert.match(result.message ?? '', /更新版本/);
+    assert.ok(result.store);
+    assert.equal(result.store.schemaVersion(), 99, 'the version must not be downgraded');
+    assert.equal(result.store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })])), false);
+
+    result.store.close();
+    rmSync(dir, { recursive: true, force: true });
 });
 
 test('derived state is never persisted', () => {

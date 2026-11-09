@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+
 import type { BoardCard, BoardColumn, BuildFact } from '../models/Board';
 import { DDL_V1, SCHEMA_VERSION } from './schema';
 
@@ -25,8 +27,23 @@ export interface SqliteDatabase {
 }
 
 export interface SqliteModule {
-    DatabaseSync: new (path: string) => SqliteDatabase;
+    DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => SqliteDatabase;
 }
+
+export type StoreStatus = 'ok' | 'recovered' | 'readonly' | 'unavailable';
+
+export interface OpenResult {
+    store: FactStore | null;
+    status: StoreStatus;
+    /** 给板内提示用的人话；ok 时为 null */
+    message: string | null;
+}
+
+/**
+ * 迁移步骤：第 i 项把库从版本 i 推到 i+1。
+ * 新增一版时往这里追加，并把 SCHEMA_VERSION 加一。
+ */
+const MIGRATIONS: Array<(db: SqliteDatabase) => void> = [(db) => db.exec(DDL_V1)];
 
 /** 能力探测：宿主升级后 API 变了就返回 null，其余功能退回单窗口内存态 */
 export function loadSqlite(): SqliteModule | null {
@@ -167,37 +184,148 @@ function parseIds(value: unknown): number[] {
 }
 
 export class FactStore {
-    private constructor(private readonly db: SqliteDatabase) {}
+    private constructor(
+        private readonly db: SqliteDatabase,
+        private readonly readOnly = false
+    ) {}
+
+    /** 便捷入口：只要 store。需要诊断信息用 `openWithStatus` */
+    public static open(dbPath: string, module: SqliteModule | null = loadSqlite()): FactStore | null {
+        return FactStore.openWithStatus(dbPath, module).store;
+    }
 
     /**
-     * 打开（或建库）。失败返回 null —— 调用方继续用内存态，不抛到界面。
-     * 迁移/损坏重建/高版本只读由 09 完整实现；这里只做幂等建库。
+     * 打开（或建库）。三条异常路径必须都不崩：
+     * - 打开失败 / 完整性不通过 → 改名为 `*.corrupt-<时间>`，重建空库，报「历史已重置」
+     * - 库版本高于代码 → 只读模式，报「库来自更新版本」，绝不降级迁移
+     * - 迁移 → 每个版本一个事务，迁移前备份 `.bak`，失败就回滚保留原库
      */
-    public static open(dbPath: string, module: SqliteModule | null = loadSqlite()): FactStore | null {
+    public static openWithStatus(dbPath: string, module: SqliteModule | null = loadSqlite()): OpenResult {
         if (!module) {
-            return null;
+            return { store: null, status: 'unavailable', message: null };
         }
+        let db: SqliteDatabase | undefined;
+        try {
+            db = new module.DatabaseSync(dbPath);
+            db.exec('PRAGMA busy_timeout=300');
+            const integrity = db.prepare('PRAGMA integrity_check').get();
+            if (String(integrity?.integrity_check ?? '') !== 'ok') {
+                throw new Error('integrity_check 未通过');
+            }
+        } catch (error) {
+            // Windows 上不能改名一个还开着的文件：先把句柄关掉
+            try {
+                db?.close();
+            } catch (closeError) {
+                console.warn('[fact-store] 关闭损坏的库失败', closeError);
+            }
+            console.warn('[fact-store] 事实库打不开或已损坏，改名重建', error);
+            return FactStore.rebuild(dbPath, module, error);
+        }
+        if (!db) {
+            return FactStore.rebuild(dbPath, module, new Error('没有拿到数据库句柄'));
+        }
+
+        try {
+            // WAL 让另一个窗口的读不被写锁挡住；busy_timeout 要小，等待是阻塞式的
+            db.exec('PRAGMA journal_mode=WAL');
+            db.exec('PRAGMA synchronous=NORMAL');
+
+            const version = Number(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
+
+            if (version > SCHEMA_VERSION) {
+                db.close();
+                const readOnlyDb = new module.DatabaseSync(dbPath, { readOnly: true });
+                return {
+                    store: new FactStore(readOnlyDb, true),
+                    status: 'readonly',
+                    message: `事实库来自更新版本（v${version} > v${SCHEMA_VERSION}），本次只读：不会降级迁移，刷新仍然可以看`, 
+                };
+            }
+
+            if (version < SCHEMA_VERSION) {
+                FactStore.backup(db, dbPath);
+                for (let step = version; step < SCHEMA_VERSION; step += 1) {
+                    db.exec('BEGIN IMMEDIATE');
+                    try {
+                        MIGRATIONS[step](db);
+                        db.exec(`PRAGMA user_version = ${step + 1}`);
+                        db.exec('COMMIT');
+                    } catch (error) {
+                        try {
+                            db.exec('ROLLBACK');
+                        } catch (rollbackError) {
+                            console.warn('[fact-store] 迁移回滚失败', rollbackError);
+                        }
+                        throw error;
+                    }
+                }
+            }
+
+            const store = new FactStore(db, false);
+            if (store.meta('first_seen_at') === null) {
+                store.setMeta('first_seen_at', String(Date.now()));
+            }
+            return { store, status: 'ok', message: null };
+        } catch (error) {
+            console.warn('[fact-store] 初始化事实库失败，退回单窗口内存态', error);
+            try {
+                db.close();
+            } catch (closeError) {
+                console.warn('[fact-store] 关闭数据库失败', closeError);
+            }
+            return { store: null, status: 'unavailable', message: null };
+        }
+    }
+
+    /** 迁移前备份。空文件没什么可备的，不刷出一堆 .bak */
+    private static backup(db: SqliteDatabase, dbPath: string): void {
+        try {
+            if (!fs.existsSync(dbPath) || fs.statSync(dbPath).size === 0) {
+                return;
+            }
+            db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+            fs.copyFileSync(dbPath, `${dbPath}.bak`);
+        } catch (error) {
+            // 备份失败不阻挠迁移：真正的风险是不备份却声称备份了，这里会留下日志
+            console.warn('[fact-store] 迁移备份失败', error);
+        }
+    }
+
+    /** 损坏的库改名让位，重建一个空库；旧文件必须留着，不能删 */
+    private static rebuild(dbPath: string, module: SqliteModule, cause: unknown): OpenResult {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const corruptPath = `${dbPath}.corrupt-${stamp}`;
+        try {
+            fs.renameSync(dbPath, corruptPath);
+            for (const suffix of ['-wal', '-shm']) {
+                if (fs.existsSync(`${dbPath}${suffix}`)) {
+                    fs.renameSync(`${dbPath}${suffix}`, `${corruptPath}${suffix}`);
+                }
+            }
+        } catch (error) {
+            console.warn('[fact-store] 无法给损坏的库改名', error);
+            return { store: null, status: 'unavailable', message: null };
+        }
+
         try {
             const db = new module.DatabaseSync(dbPath);
-            // WAL 让另一个窗口的读不被写锁挡住；busy_timeout 要小，等待是阻塞式的
             db.exec('PRAGMA journal_mode=WAL');
             db.exec('PRAGMA synchronous=NORMAL');
             db.exec('PRAGMA busy_timeout=300');
             db.exec(DDL_V1);
-
-            const version = Number(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
-            if (version < SCHEMA_VERSION) {
-                db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-            }
-
-            const store = new FactStore(db);
-            if (store.meta('first_seen_at') === null) {
-                store.setMeta('first_seen_at', String(Date.now()));
-            }
-            return store;
+            db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+            const store = new FactStore(db, false);
+            store.setMeta('first_seen_at', String(Date.now()));
+            console.warn('[fact-store] 事实库已重建，原文件保留为', corruptPath, cause);
+            return {
+                store,
+                status: 'recovered',
+                message: '事实库损坏，已重建；历史已重置，指标从今天起算',
+            };
         } catch (error) {
-            console.warn('[fact-store] 打开事实库失败，退回单窗口内存态', error);
-            return null;
+            console.warn('[fact-store] 重建事实库失败', error);
+            return { store: null, status: 'unavailable', message: null };
         }
     }
 
@@ -578,6 +706,10 @@ export class FactStore {
 
     /** 事实 + last_success_at 同一事务：失败一律回滚，返回值只表达成败 */
     private transaction(work: () => void): boolean {
+        if (this.readOnly) {
+            // 库来自更新版本：只读是单向的，绝不硬写
+            return false;
+        }
         try {
             this.db.exec('BEGIN IMMEDIATE');
             try {

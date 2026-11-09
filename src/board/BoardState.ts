@@ -85,11 +85,24 @@ export class BoardState {
     private readonly jira = new JiraService();
     /** 事实库；null = 不可用，界面照常用内存态 */
     private readonly store: FactStore | null;
+    /** 库的病况（损坏重建 / 更高版本只读）：只在板内说一次 */
+    private readonly storeNotice: BoardNotice | null;
     /** 当前凭据对应的用户，用于本地「只看我的」过滤；拉一次就缓存 */
     private viewer: { name: string; displayName: string } | null = null;
 
     constructor(factsPath?: string) {
-        this.store = factsPath ? FactStore.open(factsPath) : null;
+        const opened = factsPath ? FactStore.openWithStatus(factsPath) : null;
+        this.store = opened?.store ?? null;
+        this.storeNotice = opened?.message
+            ? {
+                  level: 'warn',
+                  message: opened.message,
+                  hint:
+                      opened.status === 'readonly'
+                          ? '库是由更新版本的扩展写的；升级扩展后会自动恢复写入'
+                          : undefined,
+              }
+            : null;
         const config = readConfig();
         this.scope = { projects: config.projects, onlyMine: config.onlyMineByDefault };
     }
@@ -892,6 +905,9 @@ export class BoardState {
     private buildNotices(): BoardNotice[] {
         const config = readConfig();
         const notices: BoardNotice[] = [...this.stageNotices];
+        if (this.storeNotice) {
+            notices.push(this.storeNotice);
+        }
 
         if (config.projects.length === 0) {
             notices.push({
