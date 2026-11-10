@@ -300,11 +300,17 @@ export class BoardState {
         }, FOLLOW_POLL_MS);
     }
 
-    /** 过期由「上次成功时间」决定，不由本地是否尝试过决定 */
+    /**
+     * 过期由「上次成功时间」决定，不由本地是否尝试过决定。
+     *
+     * 阈值不能只取 50s：轮询本身就是 60s，每次都会在 50~60s 之间闪一下「过期」。
+     * 允许漏掉两拍才算旧，同时保留「任何失败都不叫新鲜」。
+     */
     private freshnessNow(): Freshness {
         const success = this.freshness.lastSuccessAt;
-        const aged = success !== null && Date.now() - success > FRESHNESS_MS;
-        return { ...this.freshness, stale: this.freshness.error !== null || aged };
+        const intervalSec = this.visible ? readConfig().pollIntervalSec : readBadgeConfig().jira.pollIntervalSec;
+        const tooOld = success !== null && Date.now() - success > Math.max(FRESHNESS_MS, intervalSec * 2000);
+        return { ...this.freshness, stale: this.freshness.error !== null || tooOld };
     }
 
     public dispose(): void {

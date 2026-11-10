@@ -6,3 +6,5 @@ out/
 .test-out/
 *.vsix
 .scratch/mr-board/diffs/
+*.code-workspace
+

@@ -1,5 +1,6 @@
 import type { BuildFact, MrFact } from '../models/Board';
 import { GitLabService } from './GitLabService';
+import { epochOrZero } from './time';
 
 /**
  * 「这次构建的代码树里有没有这个合入」——用祖先关系判，不用时间窗。
@@ -11,6 +12,15 @@ import { GitLabService } from './GitLabService';
  * 接口失败都归 null，调用方必须退回时间窗并把结论标成「推断」。
  */
 export type Containment = boolean | null;
+
+/**
+ * 一轮最多问多少次祖先关系。
+ *
+ * 实测单次 `merge_base` 约 1 秒：259 个已合入 MR × 2 次构建 ≈ 518 对，4 并发也要两分钟，
+ * 整个刷新会被拖到比轮询间隔还长（卡片永远显示「过期」）。所以按时间倒序只查最近的一批，
+ * 其余退回时间窗（详情标「推断」）——结论可能粗一点，但不会把看板拖死。
+ */
+export const MAX_CONTAINMENT_CHECKS = 40;
 
 /** 同一对 SHA 的答案不会变，进程内缓存起来；键含仓库，跨仓库不串 */
 const mergeBaseCache = new Map<string, Promise<string>>();
@@ -112,6 +122,8 @@ export async function resolveContainment(input: {
     project: string;
     mrs: MrFact[];
     builds: BuildFact[];
+    /** 测试用：默认 MAX_CONTAINMENT_CHECKS */
+    maxChecks?: number;
 }): Promise<Map<string, Containment>> {
     const pairs: Array<{ mr: MrFact; build: BuildFact }> = [];
     const seen = new Set<string>();
@@ -137,13 +149,24 @@ export async function resolveContainment(input: {
         return new Map();
     }
 
-    const results = await GitLabService.mapWithLimit(pairs, 4, (pair) =>
+    // 新合入优先：它们最可能出现在当前这次构建里；老的合入退回时间窗代价最小
+    pairs.sort((left, right) => epochOrZero(right.mr.mergedAt) - epochOrZero(left.mr.mergedAt));
+    const budget = Math.max(0, Math.min(pairs.length, input.maxChecks ?? MAX_CONTAINMENT_CHECKS));
+    if (budget < pairs.length) {
+        console.log(`[build-ancestry] ${pairs.length} 对 SHA 里只查了最近 ${budget} 对，其余退回时间窗推断`);
+    }
+    const checked = pairs.slice(0, budget);
+    if (checked.length === 0) {
+        return new Map();
+    }
+
+    const results = await GitLabService.mapWithLimit(checked, 4, (pair) =>
         buildContainsMerge(input.gitlab, input.project, pair.mr.mergeCommitSha!, pair.build.sha!)
     );
 
     // 同一对（合入, 构建 SHA）可能被多次构建复用，先按 SHA 对归并再回填到每张卡
     const byShas = new Map<string, Containment>();
-    pairs.forEach((pair, index) => {
+    checked.forEach((pair, index) => {
         byShas.set(`${pair.mr.mergeCommitSha}|${pair.build.sha}`, results[index]);
     });
 

@@ -33,7 +33,15 @@ export function App() {
                     <div class="banner error">{model.error}</div>
                 </div>
             ) : null}
-            {!firstLoad && state ? <Banners notices={state.notices} stale={state.freshness.stale} /> : null}
+            {!firstLoad && state ? (
+                <Banners
+                    notices={state.notices}
+                    stale={state.freshness.stale}
+                    error={state.freshness.error}
+                    loading={state.loading}
+                    lastSuccessAt={state.freshness.lastSuccessAt}
+                />
+            ) : null}
             {firstLoad ? (
                 <Loading />
             ) : (

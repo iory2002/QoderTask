@@ -95,6 +95,30 @@ test('a merge already covered by the previous success is not "newly introduced"'
     assert.equal(newlyIntroducedCount([known, fresh], [success, failure], containment), 1);
 });
 
+test('the ancestry budget bounds how many pairs a refresh asks about, newest first', async () => {
+    const older = mr({ iid: 1, mergedAt: '2026-11-01T00:00:00Z', mergeCommitSha: 'old1' });
+    const newer = mr({ iid: 2, mergedAt: '2026-11-09T00:00:00Z', mergeCommitSha: 'new1' });
+    const latest = build(10, '2026-11-10T00:00:00Z', 'SUCCESS', 's10');
+
+    let calls = 0;
+    const containment = await resolveContainment({
+        gitlab: {
+            getMergeBase: async (_project: string, left: string) => {
+                calls += 1;
+                return left;
+            },
+        },
+        project: 'group/budget',
+        mrs: [older, newer],
+        builds: [latest],
+        maxChecks: 1,
+    });
+
+    assert.equal(calls, 1, 'only one merge_base call is allowed');
+    assert.equal(containment.get(containmentKey(newer, latest)), true, 'the newest merge is the one checked');
+    assert.equal(containment.has(containmentKey(older, latest)), false, 'the older one falls back to the time window');
+});
+
 test('resolveContainment dedupes identical SHA pairs but fills every card', async () => {
     const first = mr({ iid: 1, mergeCommitSha: 'aaaa' });
     const second = mr({ iid: 2, mergeCommitSha: 'aaaa' });
