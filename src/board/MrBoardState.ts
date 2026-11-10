@@ -218,6 +218,14 @@ export class MrBoardState {
         this.disposed = true;
         this.clearTimer();
         this.clearFollow();
+        // 正常关窗：把自己抢到的占位还回去，别让下一个窗口白等 45 秒
+        const config = readMrConfig();
+        if (config.repos[0]) {
+            this.store?.releaseClaim(
+                `gitlab-user:${config.repos[0].gitlabProject}@${config.repos[0].targetBranch}`,
+                this.ownerId
+            );
+        }
         this.store?.close();
     }
 

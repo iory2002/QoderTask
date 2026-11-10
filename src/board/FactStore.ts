@@ -717,6 +717,26 @@ export class FactStore {
         }
     }
 
+    /**
+     * 正常关窗时交还占位，省掉一次 45 秒空窗。
+     * 只清自己持有的那一份（owner 校验）：后开先关的窗口不能把别人正在跑的取数放掉。
+     */
+    public releaseClaim(scope: string, owner: string): void {
+        if (this.readOnly) {
+            return;
+        }
+        try {
+            this.db
+                .prepare(
+                    `UPDATE fetch_state SET attempting_until = 0, owner = NULL
+                      WHERE scope = ? AND owner = ? AND attempting_until > 0`
+                )
+                .run(scope, owner);
+        } catch (caught) {
+            console.warn('[fact-store] 交还取数占位失败', caught);
+        }
+    }
+
     /** `PRAGMA data_version`：另一个连接提交后才会变，零查询 */
     public dataVersion(): number | null {
         try {

@@ -391,6 +391,22 @@ test('approval rows are only replaced for the MRs this fetch actually asked abou
     });
 });
 
+test('a closing window hands its own placeholder back, and only its own', () => {
+    withStore((store) => {
+        store.replaceJira(SCOPE, jiraSnapshot([card({ key: 'NEX2-1' })]));
+        const now = Date.now();
+
+        assert.equal(store.claimScope(SCOPE, true, 'window-a', now), 'claimed');
+        // 另一个窗口关掉不能把别人正在跑的取数放掉
+        store.releaseClaim(SCOPE, 'window-b');
+        assert.equal(store.claimScope(SCOPE, true, 'window-c', now + 1), 'busy');
+
+        // 自己关掉则立即让位，不用等 45 秒
+        store.releaseClaim(SCOPE, 'window-a');
+        assert.equal(store.claimScope(SCOPE, true, 'window-c', now + 2), 'claimed');
+    });
+});
+
 test('derived state is never persisted', () => {
     withStore((store) => {
         const columns = store.columnsOf('issue').map((column) => column.name);

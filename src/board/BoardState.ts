@@ -317,6 +317,8 @@ export class BoardState {
         this.disposed = true;
         this.clearTimer();
         this.clearFollow();
+        // 正常关窗：把自己抢到的占位还回去，别让下一个窗口白等 45 秒
+        this.store?.releaseClaim(`jira:${readConfig().boardId}`, this.ownerId);
         this.store?.close();
     }
 
