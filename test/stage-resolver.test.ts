@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import type { BuildFact, MrFact } from '../src/models/Board';
 import { containmentKey } from '../src/services/BuildAncestry';
-import { buildChecksApplyTo, pickCardMr, resolveStage } from '../src/services/DeliveryStageResolver';
+import { buildChecksApplyTo, inheritsParentStage, isBugLikeType, pickCardMr, resolveStage } from '../src/services/DeliveryStageResolver';
 
 function mr(overrides: Partial<MrFact> & { iid: number }): MrFact {
     return {
@@ -155,7 +155,7 @@ test('a repo without a build channel tops out at merged', () => {
     assert.match(result.evidence.join('\n'), /顶格在「已合入」/);
 });
 
-test('with several MRs the highest stage wins', () => {
+test('with several MRs the newest one is the current round', () => {
     const result = resolveStage({
         tracked: true,
         dataOk: true,
@@ -163,8 +163,15 @@ test('with several MRs the highest stage wins', () => {
         mrs: [mr({ iid: 3720, state: 'merged', mergedAt: '2026-11-03T10:19:00Z' }), mr({ iid: 3773, approved: true })],
         builds: [],
     });
-    assert.equal(result.stage, 'merged');
-    assert.equal(result.cardMr?.iid, 3720);
+    // 旧 MR 已合入、新 MR 仍在审：卡片要显示当前这一轮（已审批），不是历史最高的「已合入」
+    assert.equal(result.stage, 'approved');
+    assert.equal(result.cardMr?.iid, 3773);
+    assert.match(result.evidence.join('\n'), /另有 1 个更早的 MR/);
+});
+
+test('a closed unmerged MR never outranks an active one', () => {
+    const mrs = [mr({ iid: 3720, state: 'merged', mergedAt: '2026-11-03T10:19:00Z' }), mr({ iid: 3800, state: 'closed' })];
+    assert.equal(pickCardMr(mrs)?.iid, 3720);
 });
 
 test('at the same stage the most recent merge is shown', () => {
@@ -192,13 +199,24 @@ test('a subtask with no MR inherits the parent stage', () => {
 
 // --- 构建校验按 issue 类型分化：Story / Bug 看构建，Task / Sub-task 不看 ---
 
-test('only Story and Bug are build-checked by default', () => {
+test('Story, Bug and In-Sprint Bug are build-checked by default', () => {
     assert.equal(buildChecksApplyTo('Story'), true);
     assert.equal(buildChecksApplyTo('bug'), true);
+    assert.equal(buildChecksApplyTo('In-Sprint Bug'), true);
     assert.equal(buildChecksApplyTo('Task'), false);
     assert.equal(buildChecksApplyTo('Sub-task'), false);
-    // 变体类型默认不包含，需要时通过 todoPanel.buildCheckIssueTypes 显式加入
-    assert.equal(buildChecksApplyTo('In-Sprint Bug'), false);
+    // 其余变体仍需要显式加入 pcBoard.buildCheckIssueTypes
+    assert.equal(buildChecksApplyTo('Technical Task'), false);
+});
+
+test('a bug child never inherits the parent stage', () => {
+    assert.equal(isBugLikeType('In-Sprint Bug'), true);
+    assert.equal(isBugLikeType('Story'), false);
+    // 配置/文档类子任务（codeWork=false）照旧继承；
+    // In-Sprint Bug 这类代码工作（codeWork=true）必须按自己的 MR 算
+    assert.equal(inheritsParentStage(true, false), true);
+    assert.equal(inheritsParentStage(true, true), false);
+    assert.equal(inheritsParentStage(false, true), false);
 });
 
 test('a Task tops out at merged even when a later successful build exists', () => {
@@ -290,7 +308,36 @@ test('a successful build whose tree contains the merge commit makes the card bui
 
     assert.equal(result.stage, 'built');
     assert.equal(result.build?.number, 245);
-    assert.match(result.evidence.join('\n'), /最新成功构建 #245（开始于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}）包含本次合入/);
+    assert.match(
+        result.evidence.join('\n'),
+        /最新成功构建 #245，开始于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}（UTC\+8），包含本次合入/
+    );
+});
+
+test('the build evidence carries the UTC+8 start and end of the build', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    // 2026-11-06T14:00Z = UTC+8 的 22:00，跑 4 小时 → 次日 02:00
+    const success = {
+        ...buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'bbbb2222'),
+        durationMs: 4 * 3600 * 1000,
+    };
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success],
+        containment: new Map([[containmentKey(merged, success), true]]),
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.match(
+        result.evidence.join('\n'),
+        /开始于 2026-11-06 22:00:00，结束于 2026-11-07 02:00:00（UTC\+8）/
+    );
+    // 合入时间也不再贴 GitLab 的原始 ISO 串
+    assert.match(result.evidence.join('\n'), /合入时间 2026-11-06 16:48:00（UTC\+8）/);
 });
 
 test('a build that does not contain the merge commit leaves the card at merged', () => {
@@ -367,6 +414,25 @@ test('without a SHA the time window decides and the evidence says it is inferred
 
     assert.equal(result.stage, 'built');
     assert.match(result.evidence.join('\n'), /推断/);
+});
+
+test('a restored snapshot says it did not ask the ancestry question this round', () => {
+    const merged = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'bbbb2222');
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [merged],
+        builds: [success],
+        // 从事实库恢复：不联网，containment 一定是空的
+        containment: new Map(),
+        containmentNote: 'restored',
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.match(result.evidence.join('\n'), /本轮是事实库恢复，没有联网问祖先关系/);
 });
 
 test('a card never built before is flagged when the failing build provably contains its merge', () => {
@@ -460,6 +526,102 @@ test('an unknown ancestor relation never turns the board red', () => {
     });
 
     assert.equal(result.buildFailed, false);
+});
+
+// --- 测试未通过退回开发：本轮从「未提交」重新起算 ---
+
+const REWORK_INPUT = { statusName: 'In Progress', reworkStatuses: ['In Progress'] };
+
+function builtOnce() {
+    const delivered = mr({ iid: 3769, state: 'merged', mergedAt: MERGED_AT, mergeCommitSha: 'aaaa1111' });
+    const success = buildWithSha(245, '2026-11-06T14:00:00Z', 'SUCCESS', 'bbbb2222');
+    return { delivered, success, containment: new Map([[containmentKey(delivered, success), true]]) };
+}
+
+test('back in development, a built card stops claiming 已构建 until a new MR appears', () => {
+    const { delivered, success, containment } = builtOnce();
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [delivered],
+        builds: [success],
+        containment,
+        ...REWORK_INPUT,
+    });
+
+    assert.equal(result.stage, 'none');
+    assert.equal(result.rework, true);
+    assert.match(result.evidence.join('\n'), /已退回开发：本轮从「未提交」重新起算/);
+    assert.match(result.evidence.join('\n'), /本轮还没有新的 MR/);
+});
+
+test('once the rework MR is opened the round follows it, not the old built MR', () => {
+    const { delivered, success, containment } = builtOnce();
+    const reworkMr = mr({ iid: 3800, approved: false });
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [delivered, reworkMr],
+        builds: [success],
+        containment,
+        ...REWORK_INPUT,
+    });
+
+    assert.equal(result.stage, 'mr');
+    assert.equal(result.cardMr?.iid, 3800);
+    assert.equal(result.rework, true);
+});
+
+test('a rework MR merged but not built shows 已合入待构建', () => {
+    const { delivered, success, containment } = builtOnce();
+    const reworkMr = mr({ iid: 3800, state: 'merged', mergedAt: '2026-11-10T08:00:00Z' });
+
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [delivered, reworkMr],
+        builds: [success],
+        containment,
+        ...REWORK_INPUT,
+    });
+
+    assert.equal(result.stage, 'merged');
+    assert.equal(result.rework, true);
+});
+
+test('a status outside the rework list keeps the delivered stage', () => {
+    const { delivered, success, containment } = builtOnce();
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [delivered],
+        builds: [success],
+        containment,
+        statusName: 'In Test',
+        reworkStatuses: ['In Progress'],
+    });
+
+    assert.equal(result.stage, 'built');
+    assert.notEqual(result.rework, true);
+});
+
+test('a card never delivered is not marked as rework', () => {
+    const result = resolveStage({
+        tracked: true,
+        dataOk: true,
+        buildChannel: 'full',
+        mrs: [mr({ iid: 3800 })],
+        builds: [],
+        ...REWORK_INPUT,
+    });
+
+    assert.equal(result.stage, 'mr');
+    assert.notEqual(result.rework, true);
 });
 
 

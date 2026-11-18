@@ -1,31 +1,37 @@
 import * as crypto from 'crypto';
+import * as vscode from 'vscode';
 
 import type {
+    BoardCapabilities,
     BoardCard,
     BoardColumn,
     BoardNotice,
     BoardScope,
     BoardStatePayload,
+    BoardView,
     BuildFact,
+    CardDensity,
     Freshness,
     MrFact,
     Stage,
+    StageFilterId,
 } from '../models/Board';
 import { JiraService, type JiraIssue, type JiraSprint } from '../services/JiraService';
 import { GitLabService, clearGitLabCaches, type GitLabApprovals } from '../services/GitLabService';
 import { JenkinsService } from '../services/JenkinsService';
-import { associateMrs, toMrFacts } from '../services/MrAssociation';
+import { associateMrsIncludingCommits, toMrFacts } from '../services/MrAssociation';
 import { countJiraBadges, type BadgeCounts } from '../services/BadgeCounter';
 import { buildsWorthChecking, newlyIntroducedCount, resolveContainment, type Containment } from '../services/BuildAncestry';
-import { buildChecksApplyTo, resolveStage, type StageResult } from '../services/DeliveryStageResolver';
-import { stalledAfterMerge } from '../services/StalledAfterMerge';
+import { buildChecksApplyTo, inheritsParentStage, isBugLikeType, resolveStage, type StageResult } from '../services/DeliveryStageResolver';
 import { epochOf } from '../services/time';
 import { BoardPanel } from './BoardPanel';
 import { FactStore, FOLLOW_POLL_MS, FRESHNESS_MS, type ApprovalRow, type MrRow } from './FactStore';
 import { approvalsFromStore, cardFromIssue, mrFactsFromLinks, restoredFreshness } from './Restore';
 import { ConfigError, describeError } from './errors';
 import { revisionOf } from './fingerprint';
-import { readBadgeConfig, readConfig, type BoardConfig, type RepoConfig } from './config';
+import { hiddenColumnIdsOf, hiddenColumnNamesOf, unmatchedHiddenColumns } from './columnVisibility';
+import { normalizeStageFilters, STAGE_BADGES } from './stageFilter';
+import { readBadgeConfig, readConfig, writeHiddenColumns, type BoardConfig, type RepoConfig } from './config';
 
 /** 一个 repo 条目取回来的事实 */
 interface RepoFacts {
@@ -37,8 +43,32 @@ interface RepoFacts {
     builds: BuildFact[];
     /** 祖先判定结果（key = iid@构建号）；缺失 = 未知 */
     containment: Map<string, Containment>;
+    /**
+     * 这批 containment 是怎么来的：'restored' = 从事实库恢复，本轮没联网问过祖先关系。
+     * 只用于把「推断」的原因说清楚，不参与阶段判定。
+     */
+    containmentNote?: 'restored';
     /** 失败构建新引入的合入数（只用于详情描述） */
     newlyIntroduced: number;
+}
+
+/** 详细 / 精简存在全局偏好里：重开窗口、重启都保持 */
+const DENSITY_KEY = 'pcBoard.view.density';
+
+/** 交付阶段勾选同样是全局视图偏好：不进库、不进设置页，不影响取数与角标 */
+const STAGES_KEY = 'pcBoard.view.stages';
+
+/** 非法值一律按详细处理：不认识的值不能把整块看板变空 */
+function normalizeDensity(value: unknown): CardDensity {
+    return value === 'compact' ? 'compact' : 'detailed';
+}
+
+/** 隐藏列名单的比对键：大小写与首尾空白不敏感（和 columnVisibility 的归一一致） */
+function hiddenKey(names: string[]): string {
+    return names
+        .map((name) => name.trim().toLowerCase())
+        .filter(Boolean)
+        .join('\n');
 }
 
 const ISSUE_FIELDS = [
@@ -71,6 +101,8 @@ export class BoardState {
     /** 阶段解析产生的告警（GitLab 未配置 / 取数失败），每轮重建 */
     private stageNotices: BoardNotice[] = [];
     private lastPublishedRevision = '';
+    /** 自己写 pcBoard.hiddenColumns 引发的那次配置变更：归一后的名单，用来吞掉回帧 */
+    private selfHiddenWrite: string | null = null;
     private inFlight = false;
     /** 首屏还没拿到数据：前端据此显示骨架屏而不是空看板 */
     private loading = false;
@@ -83,6 +115,12 @@ export class BoardState {
     private onBadgeChange: ((counts: BadgeCounts) => void) | undefined;
     /** epic key → 标题，Epic chip 显示用；很少变，跨轮次缓存 */
     private readonly epicLabels = new Map<string, string>();
+    /** 详细 / 精简：全局视图偏好，不进库、不影响取数 */
+    private density: CardDensity;
+    /** 交付阶段勾选：同样是纯视图偏好，全选 = 不过滤 */
+    private stages: StageFilterId[];
+    /** 存密度偏好的全局 memento；没传就只记在当前窗口 */
+    private readonly memento: vscode.Memento | undefined;
 
     private readonly jira = new JiraService();
     /** 事实库；null = 不可用，界面照常用内存态 */
@@ -92,7 +130,6 @@ export class BoardState {
     /** 当前凭据对应的用户，用于本地「只看我的」过滤；拉一次就缓存 */
     private viewer: { name: string; displayName: string } | null = null;
 
-    private ephemeralNotice: BoardNotice | null = null;
     /** 这一轮是否由用户手动触发（忽略新鲜度去抢位） */
     private manualRequest = false;
     /** 手动刷新抢不到时的重试次数；不做请求队列 */
@@ -103,8 +140,11 @@ export class BoardState {
     private followTimer: ReturnType<typeof setTimeout> | undefined;
     private lastDataVersion: number | null = null;
 
-    constructor(factsPath?: string) {
+    constructor(factsPath?: string, memento?: vscode.Memento) {
         const opened = factsPath ? FactStore.openWithStatus(factsPath) : null;
+        this.memento = memento;
+        this.density = normalizeDensity(memento?.get<CardDensity>(DENSITY_KEY));
+        this.stages = normalizeStageFilters(memento?.get<StageFilterId[]>(STAGES_KEY));
         this.store = opened?.store ?? null;
         this.storeNotice = opened?.message
             ? {
@@ -124,6 +164,11 @@ export class BoardState {
         return this.scope;
     }
 
+    /**
+     * 纯视图切换：只改内存里的展示范围。不重新取数，也不回帧——
+     * WebView 点击时已经自己画好了，再回一帧全量卡片只会让整块看板重绘。
+     * 下一轮数据帧会带上这份 scope。
+     */
     public setScope(scope: BoardScope): void {
         const config = readConfig();
         const allowed = new Set(config.projects);
@@ -131,8 +176,77 @@ export class BoardState {
             projects: (scope.projects ?? []).filter((project) => allowed.has(project)),
             onlyMine: scope.onlyMine !== false,
         };
-        // 纯视图切换：数据已经在内存里，直接重发一份状态即可，不重新拉全量
-        this.publish(true);
+    }
+
+    /**
+     * 切换详细 / 精简。
+     *
+     * 纯视图偏好：写全局 memento，不回帧。界面已经按新密度画好了，
+     * 下一轮数据帧会把这份偏好带上；重开窗口时从 memento 恢复。
+     */
+    public setDensity(density: CardDensity): void {
+        const next = normalizeDensity(density);
+        if (next === this.density) {
+            return;
+        }
+        this.density = next;
+        void this.memento?.update(DENSITY_KEY, next);
+    }
+
+    /**
+     * 「交付阶段」菜单 → 勾选要看的徽章。
+     *
+     * 与密度一样是纯视图偏好：写全局 memento，不回帧、不重新取数。
+     * 界面已经按勾选结果画好了；下一轮数据帧会把这份偏好带上，
+     * 重开窗口时从 memento 恢复。卡片数据不裁剪，角标与各类计数仍看全量。
+     */
+    public setStages(stages: StageFilterId[]): void {
+        const next = normalizeStageFilters(stages);
+        if (next.join('|') === this.stages.join('|')) {
+            return;
+        }
+        this.stages = next;
+        void this.memento?.update(STAGES_KEY, next);
+    }
+
+    /**
+     * 「显示列」菜单 → 写回 pcBoard.hiddenColumns。
+     *
+     * 数据不裁剪：只改设置里的隐藏名单，角标与各类计数仍看全量卡片。
+     * 界面上 WebView 已经按勾选结果画好了；这里只负责持久化，并且记下
+     * 自己写的值——由它引起的那次配置变更不再回帧（见 hiddenColumnsSettingChanged）。
+     */
+    public async setVisibleColumns(visibleColumnIds: string[]): Promise<void> {
+        if (this.columns.length === 0) {
+            // 列定义还没拿到：此时写回会把所有列都当成「要隐藏」，宁可不写
+            return;
+        }
+        const hidden = hiddenColumnNamesOf(this.columns, visibleColumnIds ?? []);
+        this.selfHiddenWrite = hiddenKey(hidden);
+        try {
+            await writeHiddenColumns(hidden);
+        } catch (error) {
+            this.selfHiddenWrite = null;
+            console.warn('[jira-board] 写 pcBoard.hiddenColumns 失败', error);
+            void vscode.window.showWarningMessage(
+                `无法保存看板列设置：${error instanceof Error ? error.message : String(error)}`
+            );
+        }
+    }
+
+    /**
+     * 设置里的 pcBoard.hiddenColumns 变了。
+     *
+     * 自己刚写的那次直接吞掉：WebView 已经把勾选画好了，再回一帧只会重绘整板。
+     * 其余情况（手改 settings.json、另一个窗口改的）才重发一帧让界面跟上。
+     */
+    public hiddenColumnsSettingChanged(): void {
+        const current = hiddenKey(readConfig().hiddenColumns);
+        if (this.selfHiddenWrite !== null && this.selfHiddenWrite === current) {
+            this.selfHiddenWrite = null;
+            return;
+        }
+        this.republish();
     }
 
     /** 上一轮没回来就不发下一轮；force 只影响「无变化也重发」 */
@@ -161,6 +275,16 @@ export class BoardState {
         }
     }
 
+    /**
+     * 设置里的 pcBoard.badge.jira.* 变了（mode / onlyMine / 状态名单）。
+     *
+     * 两组数字本来就是同一批卡片算出来的，mode 只是决定哪个上图标，
+     * 所以这里用已有卡片原地重算：零请求，不用等下一轮轮询。
+     */
+    public recomputeBadge(): void {
+        this.updateBadge();
+    }
+
     /** 角标口径与「只看我的」视图开关无关：切换过滤器不改数字 */
     private updateBadge(): void {
         const next = countJiraBadges(this.cards, readBadgeConfig().jira);
@@ -177,6 +301,25 @@ export class BoardState {
     }
 
     /**
+     * 把一张卡指派给自己。
+     *
+     * 写完不等下一轮轮询：先在内存里把这卡标成我的（经办人 + isMine），
+     * 页面立刻有反馈；随后 force 刷一次，用 Jira 的真实值对齐。
+     * 失败不吞：抛给面板，由它弹错误横幅——用户得知道为什么没指上。
+     */
+    public async assignToMe(key: string): Promise<void> {
+        const me = await this.jira.assignToMe(key);
+        const card = this.cards.find((item) => item.key === key);
+        if (card) {
+            card.assignee = me.displayName || card.assignee;
+            card.isMine = true;
+            this.publish(true);
+            this.updateBadge();
+        }
+        void this.refresh(true);
+    }
+
+    /**
      * 扩展激活就开表：活动栏角标必须在「没打开看板」时也有数字。
      * 面板可见时用短间隔，不可见时降频（见 scheduleNext）。
      */
@@ -189,6 +332,8 @@ export class BoardState {
         if (this.restoreFromStore()) {
             this.publish(true);
             this.updateBadge();
+            // 库里只存了 epicKey，chip 会退化成 key；补一次标题再刷新
+            void this.backfillEpicLabels();
         }
         this.scheduleFollow();
         // 启动不用 force：两个看板同时开跑，共享缓存能把重复请求合成一次
@@ -279,16 +424,17 @@ export class BoardState {
             // 指纹没变就不会重绘
             this.publish(false);
             this.updateBadge();
+            void this.backfillEpicLabels();
         }
     }
 
-    /** 抢不到占位：提示 + 3 秒后重试，最多 3 次 */
+    /**
+     * 抢不到占位：静默重试，最多 3 次。
+     *
+     * 不提示用户：多窗口竞争是我们自己的实现细节，卡上多一条黄条只会让用户
+     * 去关心一个他无法操作的东西。库里已经有上一次成功的数据，画面照常显示。
+     */
     private noteBusy(): void {
-        this.ephemeralNotice = {
-            level: 'warn',
-            message: '另一个窗口正在刷新',
-            hint: '同一个事实库只让一个窗口去取数；3 秒后自动重试',
-        };
         if (this.retryBudget >= 3) {
             return;
         }
@@ -374,7 +520,6 @@ export class BoardState {
             this.notices = this.buildNotices();
             this.persistJira(config);
             this.retryBudget = 0;
-            this.ephemeralNotice = null;
         } catch (error) {
             const described = describeError(error);
             this.store?.releaseScope(gateScope, described.message);
@@ -463,7 +608,7 @@ export class BoardState {
         return null;
     }
 
-    /** 一次批量查回 epic 标题，缺失的退化为 key */
+    /** 一次批量查回 epic 名称；查不到就不写缓存，chip 保持不显示 */
     private async resolveEpicLabels(issues: JiraIssue[]): Promise<Map<string, string>> {
         const keys = new Set<string>();
         for (const issue of issues) {
@@ -477,13 +622,56 @@ export class BoardState {
             try {
                 const result = await this.jira.search(`key IN (${list.join(', ')})`, ['summary'], list.length);
                 for (const epic of result.issues) {
-                    this.epicLabels.set(epic.key, epic.fields.summary ?? epic.key);
+                    const name = epic.fields.summary;
+                    if (name) {
+                        this.epicLabels.set(epic.key, name);
+                    }
                 }
             } catch (error) {
-                console.warn('[jira-board] epic 标题拉取失败，退回显示 key', error);
+                console.warn('[jira-board] epic 名称拉取失败，本次不显示 epic chip', error);
             }
         }
         return this.epicLabels;
+    }
+
+    /**
+     * 把 epic 名称补到卡片上。
+     *
+     * 分两步：缓存里没有的先查一次；无论查到与否，都按缓存回填卡片 ——
+     * 恢复流程会把 epicLabel 重置成 null，不回填就会导致 chip 闪烁。
+     */
+    private async backfillEpicLabels(): Promise<void> {
+        const missing = [
+            ...new Set(this.cards.map((card) => card.epicKey).filter((key): key is string => key !== null)),
+        ].filter((key) => !this.epicLabels.has(key));
+
+        if (missing.length > 0) {
+            try {
+                const list = missing.slice(0, 50);
+                const result = await this.jira.search(`key IN (${list.join(', ')})`, ['summary'], list.length);
+                for (const epic of result.issues) {
+                    const name = epic.fields.summary;
+                    if (name) {
+                        this.epicLabels.set(epic.key, name);
+                    }
+                }
+            } catch (error) {
+                // 查不到就继续不显示 chip，不影响其它字段
+                console.warn('[jira-board] epic 名称补查失败，本次不显示 epic chip', error);
+            }
+        }
+
+        let changed = false;
+        for (const card of this.cards) {
+            const label = card.epicKey ? this.epicLabels.get(card.epicKey) ?? null : null;
+            if (label !== card.epicLabel) {
+                card.epicLabel = label;
+                changed = true;
+            }
+        }
+        if (changed) {
+            this.publish(false);
+        }
     }
 
     private toCard(issue: JiraIssue, epics: Map<string, string>): BoardCard {
@@ -504,7 +692,8 @@ export class BoardState {
             statusName: fields.status?.name ?? '',
             columnName: column?.name ?? '',
             epicKey,
-            epicLabel: epicKey ? epics.get(epicKey) ?? epicKey : null,
+            // 只显示 epic 名称；拿不到名称就不显示 chip，不要退回 key
+            epicLabel: epicKey ? epics.get(epicKey) ?? null : null,
             rank: String(fields[this.rankField] ?? ''),
             assignee: fields.assignee?.displayName ?? null,
             isMine: this.viewer !== null && String(fields.assignee?.name ?? '') === this.viewer.name,
@@ -516,7 +705,6 @@ export class BoardState {
             stage: null,
             buildFailed: false,
             buildChannel: 'none',
-            mergedDaysAgo: null,
             mrs: [],
             evidence: [],
             url: this.jira.browseUrl(issue.key),
@@ -627,7 +815,19 @@ export class BoardState {
                         });
                     }
                     const mrs = batch.rows;
-                    const byKey = associateMrs(mrs, group.projects);
+                    // 标题 / 描述 / 源分支都没 key 的 MR 才补查提交标题：
+                    // 一条 MR 一次 /commits，只补最近的一小批，不把轮询拖长
+                    const byKey = await associateMrsIncludingCommits({
+                        gitlabProject: group.repo.gitlabProject,
+                        jiraProjects: group.projects,
+                        mrs,
+                        fetchCommits: (iid) => gitlab.getMrCommits(group.repo.gitlabProject, iid),
+                        onError: (mr, error) =>
+                            console.warn(
+                                `[jira-board] 读取 MR !${mr.iid} 的提交失败，本次不做提交兜底关联`,
+                                error
+                            ),
+                    });
                     // 只给「当前看板卡片关联到的 MR」查审批：90 天窗口里的 opened MR
                     // 大多数与这个 sprint 无关，全查等于几十个串行的 /approvals。
                     const cardKeys = new Set(cards.map((card) => card.key));
@@ -715,9 +915,11 @@ export class BoardState {
     ): void {
         const resolved = new Map<string, StageResult>();
 
-        // 类型决定它算不算「写代码的工作」：Task / Sub-task 没有 MR 时不报「未提交」
+        // 类型决定它算不算「写代码的工作」：Task / Sub-task 没有 MR 时不报「未提交」。
+        // 名字带 Bug 的类型（包括作为子任务开的 In-Sprint Bug）一律算代码工作，
+        // 即使它没在 buildCheckIssueTypes 里也要显示「未提交」。
         for (const card of cards) {
-            card.codeWork = buildChecksApplyTo(card.issueType, config.buildCheckIssueTypes);
+            card.codeWork = buildChecksApplyTo(card.issueType, config.buildCheckIssueTypes) || isBugLikeType(card.issueType);
         }
 
         // 第一遍：非子任务
@@ -730,7 +932,8 @@ export class BoardState {
                 repoByProject,
                 factsByRepo,
                 gitlabConfigured,
-                config.buildCheckIssueTypes
+                config.buildCheckIssueTypes,
+                config.reworkStatuses
             );
             resolved.set(card.key, result);
             this.applyResult(card, result, mrs);
@@ -743,11 +946,19 @@ export class BoardState {
             }
             const parent = card.parentKey ? resolved.get(card.parentKey) : undefined;
             // 父任务可能不在当前看板上（只看我的时最常见）：那就没法继承，只能判「无法判定」
-            const inherited = parent
+            // Bug 类子任务不继承：测试退回后开的 In-Sprint Bug 是新一轮代码工作，
+            // 跟着 Story 会一直显示父任务那一轮的「已构建」。
+            const inherited = !inheritsParentStage(card.isSubtask, card.codeWork === true)
+                ? undefined
+                : parent
                 ? {
                       stage: parent.stage ?? 'unknown',
                       buildFailed: parent.buildFailed,
-                      evidence: [`父任务 ${card.parentKey} 的阶段为「${parent.stage ?? '未知'}」`],
+                      evidence: [
+                          `父任务 ${card.parentKey} 的阶段为「${
+                              STAGE_BADGES[parent.stage ?? 'unknown']?.text ?? '未知'
+                          }」`,
+                      ],
                       mr: parent.cardMr,
                       build: parent.build,
                   }
@@ -767,6 +978,7 @@ export class BoardState {
                 factsByRepo,
                 gitlabConfigured,
                 config.buildCheckIssueTypes,
+                config.reworkStatuses,
                 inherited
             );
             resolved.set(card.key, result);
@@ -814,6 +1026,9 @@ export class BoardState {
         this.cards = issues.map((row) => {
             const card = cardFromIssue(row, board.columns, viewerName, (key) => this.jira.browseUrl(key));
             card.pinned = pinnedKeys.has(row.key);
+            // epic 名称缓存在内存里，恢复时直接带上。每次都等 backfill 会闪：
+            // 写库触发的恢复重建卡片，chip 会先消失一帧再出现。
+            card.epicLabel = row.epicKey ? this.epicLabels.get(row.epicKey) ?? null : null;
             return card;
         });
 
@@ -855,6 +1070,7 @@ export class BoardState {
                       number: row.number,
                       result: row.result,
                       timestamp: row.startedAt,
+                      durationMs: row.durationMs ?? undefined,
                       branch: repo.targetBranch,
                       url: row.url ?? '',
                       sha: row.sha ?? undefined,
@@ -874,6 +1090,7 @@ export class BoardState {
                 byKey: facts,
                 builds,
                 containment: new Map(),
+                containmentNote: 'restored',
                 newlyIntroduced: 0,
             });
         }
@@ -906,6 +1123,7 @@ export class BoardState {
         factsByRepo: Map<string, RepoFacts>,
         gitlabConfigured: boolean,
         buildCheckTypes: string[],
+        reworkStatuses: string[],
         inherited?: { stage: Stage; buildFailed: boolean; evidence: string[]; mr?: MrFact; build?: StageResult['build'] }
     ): { result: StageResult; mrs: MrFact[] } {
         const repo = repoByProject.get(card.project);
@@ -932,7 +1150,10 @@ export class BoardState {
                 mrs,
                 builds: repoFacts?.builds ?? [],
                 containment: repoFacts?.containment,
+                containmentNote: repoFacts?.containmentNote,
                 newlyIntroduced: repoFacts?.newlyIntroduced ?? 0,
+                statusName: card.statusName,
+                reworkStatuses,
                 inherited,
             }),
             mrs,
@@ -942,13 +1163,11 @@ export class BoardState {
     private applyResult(card: BoardCard, result: StageResult, mrs: MrFact[]): void {
         card.stage = result.stage;
         card.buildFailed = result.buildFailed;
+        card.rework = result.rework === true;
         card.buildChannel = result.buildChannel;
         card.build = result.build;
         card.evidence = result.evidence;
         card.mrs = mrs.map((mr) => ({ ...mr, isCardMr: mr.iid === result.cardMr?.iid }));
-        // 子任务自己没有 MR时，用继承来的那个算合入时长
-        const forStall = card.mrs.length > 0 ? card.mrs : result.cardMr ? [result.cardMr] : [];
-        card.mergedDaysAgo = stalledAfterMerge(forStall, Date.now())?.days ?? null;
     }
 
     /** Jira 快照入库：board / sprint / issue 与 last_success_at 同一事务 */
@@ -1037,9 +1256,6 @@ export class BoardState {
         if (this.storeNotice) {
             notices.push(this.storeNotice);
         }
-        if (this.ephemeralNotice) {
-            notices.push(this.ephemeralNotice);
-        }
 
         if (config.projects.length === 0) {
             notices.push({
@@ -1080,12 +1296,21 @@ export class BoardState {
     private buildPayload(): BoardStatePayload {
         const config = readConfig();
         const freshness = this.freshnessNow();
+        // 隐藏列只算成 id 交给前端：数据不裁剪，角标与各类计数仍然看全量卡片
+        const hiddenColumnIds = hiddenColumnIdsOf(this.columns, config.hiddenColumns);
+        const notices = [...this.notices, ...this.hiddenColumnNotices(config)];
+        const view: BoardView = { density: this.density, stages: this.stages };
+        // GitLab 没配凭据时阶段恒为「无法判定」：徽章只会是噪声，交给前端整块隐藏
+        const capabilities: BoardCapabilities = { gitlab: new GitLabService().isConfigured() };
         const signature = revisionOf({
             scope: this.scope,
             columns: this.columns,
+            hiddenColumnIds,
+            view,
+            gitlabConfigured: capabilities.gitlab,
             cards: this.cards,
             sprint: this.sprint?.id ?? null,
-            notices: this.notices,
+            notices,
             stale: freshness.stale,
             error: freshness.error,
             loading: this.loading,
@@ -1097,14 +1322,37 @@ export class BoardState {
             revision: signature,
             loading: this.loading,
             columns: this.columns,
+            hiddenColumnIds,
             cards: this.cards,
             scope: this.scope,
+            view,
+            capabilities,
             projectOptions: config.projects,
             freshness,
-            notices: this.notices,
+            notices,
             unmappedCount: this.unmappedCount(),
             sprintName: this.sprint?.name ?? null,
         };
+    }
+
+    /**
+     * 隐藏列设置里没有命中任何看板列时提醒一句。
+     *
+     * 现算而不进 this.notices：改完设置下一次 publish 就该看到，
+     * 而 this.notices 里的取数告警不能在这里重建（失败横幅会被抹掉）。
+     */
+    private hiddenColumnNotices(config: BoardConfig): BoardNotice[] {
+        const unmatched = unmatchedHiddenColumns(this.columns, config.hiddenColumns);
+        if (unmatched.length === 0) {
+            return [];
+        }
+        return [
+            {
+                level: 'warn',
+                message: `pcBoard.hiddenColumns 里的列名没有匹配到看板列：${unmatched.join('、')}`,
+                hint: `当前列：${this.columns.map((column) => column.name).join(' / ')}（大小写与空格不敏感）`,
+            },
+        ];
     }
 
     /** 落在 board 列之外的 issue：有卡片但状态不属于任何列 */

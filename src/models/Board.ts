@@ -6,6 +6,19 @@
 /** 交付阶段。null 表示该项目不做阶段追踪（无 repo 条目）。 */
 export type Stage = 'none' | 'mr' | 'approved' | 'merged' | 'built' | 'unknown';
 
+/**
+ * 「交付阶段」视图筛选的选项 id。
+ *
+ * 前六个就是卡片上的阶段徽章；另外三个是徽章的特殊情况：
+ * - rework：Jira 已退回开发（返工中），本轮从「未提交」重新起算
+ * - failed：构建失败徽章（与阶段徽章同时出现，不是互斥的第七个阶段）
+ * - nobadge：卡片根本没有徽章（项目未配 repo，或 Task / Sub-task 没有 MR）
+ */
+export type StageFilterId = Stage | 'rework' | 'failed' | 'nobadge';
+
+/** 卡片密度：详细 = 现在的完整卡片；精简 = 只留 key 与阶段徽章那一行 */
+export type CardDensity = 'detailed' | 'compact';
+
 /** 一条来自 GitLab 的 MR 事实 */
 export interface MrFact {
     iid: number;
@@ -23,8 +36,8 @@ export interface MrFact {
     mergedAt?: string;
     /** 合入后的 merge commit：祖先判定的左边 */
     mergeCommitSha?: string;
-    /** 靠什么关联到这张卡：标题 > 描述 > 分支名 */
-    matchedBy: 'title' | 'description' | 'branch';
+    /** 靠什么关联到这张卡：标题 > 描述 > 分支名 > 提交标题（最后的兜底） */
+    matchedBy: 'title' | 'description' | 'branch' | 'commit';
     /** 卡片上展示的那一个（阶段最高；同阶段 merged_at 最新） */
     isCardMr: boolean;
 }
@@ -36,6 +49,8 @@ export interface BuildFact {
     result: string | null;
     /** epoch ms */
     timestamp: number;
+    /** Jenkins 的 duration（毫秒）；进行中或缺失为 undefined，结束时间靠它算 */
+    durationMs?: number;
     branch: string;
     url: string;
     /** 该构建 checkout 的 commit；拿不到时祖先判定只能退回时间窗 */
@@ -85,12 +100,12 @@ export interface BoardCard {
      */
     codeWork?: boolean;
     buildFailed: boolean;
-    buildChannel: BuildChannel;
     /**
-     * 最早一次合入距今的天数；未合入 / 取数失败 / 未到阈值都是 null。
-     * 只在详情里用来写「合入后 N 天未推进」，不占卡面。
+     * Jira 状态已退回开发，本轮从零起算。
+     * true 且 stage 为 none 时卡片显示「返工中」，不显示上一轮的「已构建」。
      */
-    mergedDaysAgo: number | null;
+    rework?: boolean;
+    buildChannel: BuildChannel;
     /** 该 key 关联到的全部 MR，按阶段降序 */
     mrs: MrFact[];
     build?: BuildFact;
@@ -102,6 +117,22 @@ export interface BoardCard {
 export interface BoardScope {
     projects: string[];
     onlyMine: boolean;
+}
+
+/** 视图开关（纯展示，不参与取数与计数） */
+export interface BoardView {
+    density: CardDensity;
+    /**
+     * 勾选要看的阶段徽章，全选 = 不过滤。
+     * 与隐藏列一样只影响渲染：cards 仍是全量，角标与各类计数都不看它。
+     */
+    stages: StageFilterId[];
+}
+
+/** 运行能力：决定前端哪些信息根本不该出现，而不是取数失败 */
+export interface BoardCapabilities {
+    /** 没有 GitLab 凭据时，阶段徽章恒为「无法判定」，两种密度都不显示 */
+    gitlab: boolean;
 }
 
 export interface Freshness {
@@ -127,8 +158,16 @@ export interface BoardStatePayload {
     /** 首次加载尚未完成：为 true 时前端应显示骨架屏，不要把空列当成「读不到」 */
     loading: boolean;
     columns: BoardColumn[];
+    /**
+     * 被 pcBoard.hiddenColumns 隐藏的列 id。
+     * 只是渲染开关：cards 仍是全量，角标与各类计数都不受它影响。
+     */
+    hiddenColumnIds: string[];
     cards: BoardCard[];
     scope: BoardScope;
+    /** 卡片密度：全局视图偏好，改完立刻重发一帧 */
+    view: BoardView;
+    capabilities: BoardCapabilities;
     /** 项目过滤候选（配置白名单） */
     projectOptions: string[];
     freshness: Freshness;
@@ -145,12 +184,18 @@ export interface WebviewMessage {
     payload?: unknown;
 }
 
-/** WebView → 扩展。看板是只读的：改状态一律到 Jira 网页里做 */
+/**
+ * WebView → 扩展。除了「指派给我」，看板是只读的：改状态一律到 Jira 网页里做
+ */
 export type WebviewRequest =
     | { type: 'board:ready'; requestId?: string }
     | { type: 'board:refresh'; requestId?: string; payload?: { force?: boolean } }
     | { type: 'board:setScope'; requestId?: string; payload: BoardScope }
+    | { type: 'board:setDensity'; requestId?: string; payload: { density: CardDensity } }
+    | { type: 'board:setStages'; requestId?: string; payload: { stages: StageFilterId[] } }
+    | { type: 'board:setVisibleColumns'; requestId?: string; payload: { visibleColumnIds: string[] } }
     | { type: 'card:openJira'; requestId?: string; payload: { key: string } }
+    | { type: 'card:assignToMe'; requestId?: string; payload: { key: string } }
     | { type: 'board:openExternal'; requestId?: string; payload: { url: string } };
 
 /** 扩展 → WebView */

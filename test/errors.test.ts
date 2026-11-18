@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 
 import { describeError } from '../src/board/errors';
+import { JiraApiError } from '../src/services/JiraService';
 
 function tlsError(code: string, message: string): Error {
     const error = new Error(message) as NodeJS.ErrnoException;
@@ -42,4 +43,27 @@ test('unrelated failures keep their raw message', () => {
     const described = describeError(new Error('boom'));
     assert.equal(described.message, 'boom');
     assert.equal(described.hint, undefined);
+});
+
+test('400 banner carries Jira errorMessages instead of bare status', () => {
+    const error = new JiraApiError(
+        400,
+        'Jira API error 400',
+        JSON.stringify({
+            errorMessages: ["The value 'NEX2-1100' does not exist for the field 'project'."],
+            errors: {},
+        })
+    );
+    assert.match(error.readable, /NEX2-1100/);
+    assert.match(describeError(error).message, /NEX2-1100/);
+});
+
+test('400 with field-level errors joins them into the banner', () => {
+    const error = new JiraApiError(400, 'Jira API error 400', JSON.stringify({ errorMessages: [], errors: { summary: '不能为空' } }));
+    assert.match(error.readable, /不能为空/);
+});
+
+test('400 with unparseable body keeps the bare status', () => {
+    const error = new JiraApiError(400, 'Jira API error 400', '<html>');
+    assert.equal(error.readable, 'Jira 请求失败 400');
 });

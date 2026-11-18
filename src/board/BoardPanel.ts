@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 
-import type { BoardScope, ExtensionResponse, WebviewMessage } from '../models/Board';
+import type { BoardScope, CardDensity, ExtensionResponse, StageFilterId, WebviewMessage } from '../models/Board';
 
 /**
  * 看板面板把「用户做了什么」交给外部的状态层处理。
@@ -11,7 +11,15 @@ export interface BoardPanelDelegate {
     onReady(panel: BoardPanel): void | Promise<void>;
     onRefresh(force: boolean): void | Promise<void>;
     onScopeChange(scope: BoardScope): void | Promise<void>;
+    /** 切换卡片密度：详细 / 精简（纯视图偏好） */
+    onDensityChange(density: CardDensity): void | Promise<void>;
+    /** 勾选要看的交付阶段徽章（纯视图偏好，不重新取数） */
+    onStageFilterChange(stages: StageFilterId[]): void | Promise<void>;
+    /** 勾选要看显示的列：写回 pcBoard.hiddenColumns */
+    onVisibleColumnsChange(visibleColumnIds: string[]): void | Promise<void>;
     onOpenJira(key: string): void | Promise<void>;
+    /** 把卡片指派给当前 Jira 用户（看板唯一的写操作） */
+    onAssignToMe(key: string): void | Promise<void>;
     onOpenExternal(url: string): void | Promise<void>;
     onVisibilityChanged(visible: boolean): void;
     onDisposed(): void;
@@ -117,8 +125,29 @@ export class BoardPanel {
                 case 'board:setScope':
                     await this.handlers.onScopeChange?.(message.payload as BoardScope);
                     return;
+                case 'board:setDensity':
+                    await this.handlers.onDensityChange?.(
+                        (message.payload as { density: CardDensity }).density
+                    );
+                    return;
+                case 'board:setStages': {
+                    // 缺 payload 时不能当成「一个都不勾」：那会把整块看板变空
+                    const stages = (message.payload as { stages?: StageFilterId[] } | undefined)?.stages;
+                    if (Array.isArray(stages)) {
+                        await this.handlers.onStageFilterChange?.(stages);
+                    }
+                    return;
+                }
+                case 'board:setVisibleColumns':
+                    await this.handlers.onVisibleColumnsChange?.(
+                        (message.payload as { visibleColumnIds: string[] }).visibleColumnIds ?? []
+                    );
+                    return;
                 case 'card:openJira':
                     await this.handlers.onOpenJira?.((message.payload as { key: string }).key);
+                    return;
+                case 'card:assignToMe':
+                    await this.handlers.onAssignToMe?.((message.payload as { key: string }).key);
                     return;
                 case 'board:openExternal':
                     await this.handlers.onOpenExternal?.((message.payload as { url: string }).url);

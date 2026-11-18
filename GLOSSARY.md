@@ -4,7 +4,7 @@ Domain vocabulary for the Todo Panel / Jira Board extension. Terms only — impl
 
 ## Delivery Stage
 
-The furthest node a Jira issue has reached along the code-delivery chain, derived from code-host and build facts. Never hand-entered. When multiple signals disagree, the highest reached stage wins (a self-merged MR is `Merged`, not `Awaiting approval`).
+The progress of the issue's **current round** along the code-delivery chain, derived from code-host and build facts. Never hand-entered. When a card owns several merge requests, the newest one decides the stage — not the highest reached one: after rework the old MR is already merged and built, while the new MR is the work in flight.
 
 Ladder, in order:
 
@@ -21,6 +21,14 @@ When a build records no commit SHA (or the ancestry question cannot be answered)
 The ladder is ordered by reached-ness, not by completeness: skipping a rung (merged without review) advances the stage rather than blocking it.
 
 Stages map onto columns only as a suggestion: approval hints at `In Code Review` for a Story, a merge hints at `In Test` for a Bug or Task. The legal target is whatever the issue's own transitions allow — never inferred from column order.
+
+## Rework
+
+A card whose Jira status has gone back to development — `In Progress`, `Reopened`, `In Rework` or `Test Failed` by default — after an earlier round was built. The delivered round is history: until a newer merge request exists, the stage shows **Rework** (`返工中`) instead of `Built`, and the detail panel keeps the previous MR and build number as evidence. The delivery fact is never erased; it is scoped to its round. Once a newer MR appears the stage follows that MR again: awaiting review, approved, merged, built.
+
+A `Built` badge therefore always means "the merge of the round currently in flight is inside a successful build", not "this issue has ever been built".
+
+Children do not drag a parent's delivered stage into a new round: a sub-task inherits the parent stage only when it is not code work. Types whose name contains `Bug` — including an `In-Sprint Bug` filed under a returned Story — are code work and are judged on their own merge requests and builds. A fix MR must name the child bug key in its title, description or source branch, otherwise the child has no MR and stays at `Not submitted`.
 
 ## Target branch
 

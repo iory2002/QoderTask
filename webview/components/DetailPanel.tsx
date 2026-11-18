@@ -1,15 +1,14 @@
 import { useEffect } from 'preact/hooks';
 
-import type { BoardCard, BoardStatePayload } from '../../src/models/Board';
+import { buildEndOf, formatStamp } from '../../src/board/buildTime';
+import type { BoardCard } from '../../src/models/Board';
 import { post } from '../api';
 
 export function DetailPanel({
     card,
-    state,
     onClose,
 }: {
     card: BoardCard;
-    state: BoardStatePayload;
     onClose: () => void;
 }) {
     useEffect(() => {
@@ -25,6 +24,8 @@ export function DetailPanel({
     // 卡片上展示的那个 MR（阶段最高；同阶段 merged_at 最新）
     const cardMr = card.mrs.find((mr) => mr.isCardMr) ?? card.mrs[0];
     const openExternal = (url: string) => post({ type: 'board:openExternal', payload: { url } });
+    // 构建结束时间由 Jenkins 的 duration 推算；进行中的构建没有结束时间
+    const buildEnd = card.build ? buildEndOf(card.build) : null;
 
     return (
         <>
@@ -50,10 +51,6 @@ export function DetailPanel({
 
                 <div class="dlg-body">
                     <div class="title" style="cursor:auto">{card.summary}</div>
-
-                    {card.mergedDaysAgo !== null ? (
-                        <div class="stall">合入后 {card.mergedDaysAgo} 天未推进</div>
-                    ) : null}
 
                     <h4>阶段推导依据</h4>
                     {card.stage === null ? (
@@ -118,7 +115,7 @@ export function DetailPanel({
                                     {mr.mergedAt ? (
                                         <>
                                             <dt>合入时间</dt>
-                                            <dd>{mr.mergedAt}</dd>
+                                            <dd>{formatStamp(mr.mergedAt, true) ?? mr.mergedAt}</dd>
                                         </>
                                     ) : null}
                                     <dt>分支</dt>
@@ -150,7 +147,15 @@ export function DetailPanel({
                                     <dt>结果</dt>
                                     <dd>{card.build.result ?? '进行中'}</dd>
                                     <dt>开始时间</dt>
-                                    <dd>{new Date(card.build.timestamp).toLocaleString()}</dd>
+                                    <dd>{formatStamp(card.build.timestamp, true) ?? '未知'}</dd>
+                                    <dt>结束时间</dt>
+                                    <dd>
+                                        {card.build.result === null
+                                            ? '进行中'
+                                            : buildEnd === null
+                                              ? '未知（Jenkins 未给耗时）'
+                                              : formatStamp(buildEnd, true)}
+                                    </dd>
                                     <dt>分支</dt>
                                     <dd>{card.build.branch}</dd>
                                 </dl>
@@ -172,11 +177,6 @@ export function DetailPanel({
                 </div>
 
                 <div class="dlg-foot">
-                    {state.scope.onlyMine ? null : (
-                        <span class="hint" style="margin-right:auto">
-                            头像与经办人只在「只看我的」关闭时显示
-                        </span>
-                    )}
                     {cardMr ? (
                         <button
                             class="btn gitlab"
@@ -187,24 +187,38 @@ export function DetailPanel({
                             {card.mrs.length > 1 ? `（另有 ${card.mrs.length - 1} 个）` : ''}
                         </button>
                     ) : null}
-                    <button
-                        class="btn primary"
-                        onClick={() => post({ type: 'card:openJira', payload: { key: card.key } })}
-                    >
-                        在 Jira 中打开
-                    </button>
+                    <div class="dlg-actions">
+                        {card.isMine ? null : (
+                            <button
+                                class="btn secondary"
+                                title={`把 ${card.key} 指派给当前 Jira 账号`}
+                                onClick={() => post({ type: 'card:assignToMe', payload: { key: card.key } })}
+                            >
+                                指派给我
+                            </button>
+                        )}
+                        <button
+                            class="btn primary"
+                            onClick={() => post({ type: 'card:openJira', payload: { key: card.key } })}
+                        >
+                            在 Jira 中打开
+                        </button>
+                    </div>
                 </div>
             </aside>
         </>
     );
 }
 
-function describeSource(matchedBy: 'title' | 'description' | 'branch'): string {
+function describeSource(matchedBy: 'title' | 'description' | 'branch' | 'commit'): string {
     if (matchedBy === 'title') {
         return '标题里含这个 key';
     }
     if (matchedBy === 'description') {
         return '标题没有 key，描述里有';
+    }
+    if (matchedBy === 'commit') {
+        return '标题、描述、分支都没有 key，靠提交标题关联';
     }
     return '标题与描述都没有 key，靠源分支名关联';
 }

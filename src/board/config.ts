@@ -20,9 +20,13 @@ export interface BoardConfig {
     /** dev 开关：打开后才会把 extraIssueKeys 里的 issue 钉进看板 */
     devMode: boolean;
     onlyMineByDefault: boolean;
+    /** 只在看板上隐藏的列名：纯展示开关，不参与取数与计数 */
+    hiddenColumns: string[];
     pollIntervalSec: number;
     /** 哪些 issue 类型需要看构建；其余类型（Task / Sub-task）阶段顶格在「已合入」 */
     buildCheckIssueTypes: string[];
+    /** 算「已退回开发 / 返工」的 Jira 状态名：处于这些状态时本轮从「未提交」重新起算 */
+    reworkStatuses: string[];
     /** 额外钉住的 issue key：仅在 devMode 打开时生效，用来单独盯一张还没进 sprint 的卡 */
     extraIssueKeys: string[];
     repos: RepoConfig[];
@@ -73,8 +77,10 @@ const DEFAULTS: BoardConfig = {
     projects: ['NEX2'],
     devMode: false,
     onlyMineByDefault: true,
+    hiddenColumns: [],
     pollIntervalSec: 60,
-    buildCheckIssueTypes: ['Story', 'Bug'],
+    buildCheckIssueTypes: ['Story', 'Bug', 'In-Sprint Bug'],
+    reworkStatuses: ['In Progress', 'Reopened', 'In Rework', 'Test Failed'],
     extraIssueKeys: [],
     repos: [],
 };
@@ -137,6 +143,19 @@ function readStringList(key: string, fallback: string[], upper = false): string[
         .filter(Boolean);
 }
 
+/**
+ * 把「要隐藏的列名」写回设置。看板「视图」菜单直接用它，不再要求用户手改 JSON。
+ *
+ * 打开工作区时写 Workspace（跟着仓库走，团队可共享）；单文件窗口没有
+ * Workspace 层，退回 Global，否则 update 会直接报错。
+ */
+export function writeHiddenColumns(names: string[]): Thenable<void> {
+    const target = vscode.workspace.workspaceFolders?.length
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    return vscode.workspace.getConfiguration(SECTION).update('hiddenColumns', names, target);
+}
+
 /** 每次调用都重新读设置：用户改完配置不必重载窗口 */
 export function readConfig(): BoardConfig {
     const projects = readStringList('projects', DEFAULTS.projects, true);
@@ -157,8 +176,10 @@ export function readConfig(): BoardConfig {
         projects,
         devMode: readValue<boolean>('devMode', DEFAULTS.devMode),
         onlyMineByDefault: readValue<boolean>('onlyMineByDefault', DEFAULTS.onlyMineByDefault),
+        hiddenColumns: readStringList('hiddenColumns', DEFAULTS.hiddenColumns),
         pollIntervalSec: Math.min(600, Math.max(30, rawInterval)),
         buildCheckIssueTypes: readStringList('buildCheckIssueTypes', DEFAULTS.buildCheckIssueTypes),
+        reworkStatuses: readStringList('reworkStatuses', DEFAULTS.reworkStatuses),
         extraIssueKeys: readStringList('extraIssueKeys', DEFAULTS.extraIssueKeys, true),
         repos,
     };

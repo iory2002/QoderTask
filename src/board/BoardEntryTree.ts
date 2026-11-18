@@ -7,8 +7,8 @@ export interface BoardEntryOptions {
     viewType: string;
     /** 活动栏容器名 / 视图标题 */
     title: string;
-    /** 两个数字的说明，如 ['开发中', '测试中'] */
-    labels: [string, string];
+    /** 两个数字的说明，如 ['开发中', '测试中']；顺序必须与 counts 的主/副对应，所以按需现取 */
+    labels: () => [string, string];
     /** 点数字行要执行的命令（打开对应看板） */
     openCommand: string;
     /** 「打开设置」行执行的命令 */
@@ -56,12 +56,23 @@ export class BoardEntryTree implements vscode.TreeDataProvider<vscode.TreeItem>,
         this.changed.fire();
     }
 
+    /**
+     * 口径变了（数字含义 / 标签顺序）：用当前计数重画一次。
+     *
+     * 数字可能没变（例如还是 0），update() 不会被触发，但标签必须跟着 mode 调换，
+     * 所以这里单独提供一个只重画、不依赖计数的入口。
+     */
+    public refresh(): void {
+        this.apply(this.counts);
+        this.changed.fire();
+    }
+
     public getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
         return element;
     }
 
     public getChildren(): vscode.TreeItem[] {
-        const [primaryLabel, secondaryLabel] = this.options.labels;
+        const [primaryLabel, secondaryLabel] = this.options.labels();
         return [
             this.countRow(primaryLabel, this.counts.primary, 'charts.red'),
             this.countRow(secondaryLabel, this.counts.secondary, 'charts.green'),
@@ -78,7 +89,7 @@ export class BoardEntryTree implements vscode.TreeDataProvider<vscode.TreeItem>,
         if (!view) {
             return;
         }
-        const [primaryLabel, secondaryLabel] = this.options.labels;
+        const [primaryLabel, secondaryLabel] = this.options.labels();
         const summary = `${primaryLabel} ${counts.primary} · ${secondaryLabel} ${counts.secondary}`;
 
         view.badge = counts.primary > 0

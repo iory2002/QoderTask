@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'preact/hooks';
 
+import { ALL_STAGE_FILTERS } from '../src/board/stageFilter';
 import { Board } from './components/Board';
 import { Banners } from './components/Banners';
 import { DetailPanel } from './components/DetailPanel';
@@ -34,20 +35,19 @@ export function App() {
                 </div>
             ) : null}
             {!firstLoad && state ? (
-                <Banners
-                    notices={state.notices}
-                    stale={state.freshness.stale}
-                    error={state.freshness.error}
-                    loading={state.loading}
-                    lastSuccessAt={state.freshness.lastSuccessAt}
-                />
+                <Banners notices={state.notices} />
             ) : null}
             {firstLoad ? (
                 <Loading />
             ) : (
-                <Board state={state!} onRetry={() => model.refresh(true)} onOpenDetail={setSelectedKey} />
+                <Board
+                    state={state!}
+                    onRetry={() => model.refresh(true)}
+                    onOpenDetail={setSelectedKey}
+                    onResetStages={() => model.setStages(ALL_STAGE_FILTERS)}
+                />
             )}
-            {state && selected ? <DetailPanel card={selected} state={state} onClose={closeDetail} /> : null}
+            {state && selected ? <DetailPanel card={selected} onClose={closeDetail} /> : null}
         </div>
     );
 }

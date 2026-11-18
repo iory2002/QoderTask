@@ -406,6 +406,21 @@ export class GitLabService {
     }
 
     /**
+     * MR 的提交标题，给「标题 / 描述 / 源分支都没有 key」时的兜底关联用。
+     *
+     * 这是唯一一条会额外发的取数请求，所以只由调用方对未关联的 MR 发起，
+     * 且只取一页（100 条）：MR 的提交量本就很小，超出的部分不参与关联。
+     */
+    public async getMrCommits(project: string, iid: number): Promise<string[]> {
+        const query =
+            `/api/v4/projects/${encodeURIComponent(project)}/merge_requests/${iid}/commits` +
+            `?per_page=100`;
+        const rows = await this.request<Array<{ title?: string; message?: string }>>(query, 10000);
+        // title 就是提交的第一行；message 是全量文本，交给调用方再切一次
+        return rows.map((row) => row.title ?? row.message ?? '');
+    }
+
+    /**
      * 审批只能看这个端点：`approved_by` 在列表与详情接口里根本不存在。
      * 判据是 `approved === true`，不是 `approved_by.length > 0`。
      *

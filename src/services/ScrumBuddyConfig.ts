@@ -40,12 +40,38 @@ export function decryptValue(text: string): string {
 }
 
 /**
- * 需要解密的敏感字段定义
+ * 需要解密的一级敏感字段
  */
-const SENSITIVE_FIELDS: Array<{ key: string }> = [
-    { key: 'password' },
-    { key: 'token' },
+const SENSITIVE_FIELDS: string[] = ['password', 'token'];
+
+/**
+ * 嵌套在子对象里的敏感字段。`sb-agent authorize` 把 Jira token 写在
+ * `jira.oauth.token`，只看一级字段会把密文原样当 token 用。
+ */
+const NESTED_SENSITIVE_FIELDS: Array<{ parent: string; keys: string[] }> = [
+    { parent: 'oauth', keys: ['token', 'tokenSecret', 'requestTokenSecret'] },
 ];
+
+function decryptInPlace(holder: Record<string, any>, key: string): void {
+    if (typeof holder[key] === 'string' && holder[key].startsWith(ENCRYPTED_PREFIX)) {
+        holder[key] = decryptValue(holder[key]);
+    }
+}
+
+function decryptSection(section: Record<string, any>): void {
+    for (const key of SENSITIVE_FIELDS) {
+        decryptInPlace(section, key);
+    }
+    for (const { parent, keys } of NESTED_SENSITIVE_FIELDS) {
+        const child = section[parent];
+        if (!child || typeof child !== 'object') {
+            continue;
+        }
+        for (const key of keys) {
+            decryptInPlace(child, key);
+        }
+    }
+}
 
 /**
  * 读取 ~/.scrumbuddy/config.json，自动解密 enc: 前缀的敏感字段
@@ -64,11 +90,7 @@ export function loadScrumBuddyConfig(): Record<string, any> | null {
         for (const platform of Object.keys(config)) {
             const section = config[platform];
             if (section && typeof section === 'object') {
-                for (const { key } of SENSITIVE_FIELDS) {
-                    if (typeof section[key] === 'string' && section[key].startsWith(ENCRYPTED_PREFIX)) {
-                        section[key] = decryptValue(section[key]);
-                    }
-                }
+                decryptSection(section);
             }
         }
         return config;

@@ -22,6 +22,22 @@ $cliCandidates = @(
 )
 $cli = $cliCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
+# 版本门禁：1.39.1 的 Electron 有已知问题，扩展装上去会报 Electron 错误
+$ideVersion = $null
+if ($cli) {
+    $firstLine = (& $cli --version | Select-Object -First 1)
+    if ("$firstLine" -match '^\d+\.\d+\.\d+') { $ideVersion = [version]$Matches[0] }
+}
+if (-not $ideVersion) {
+    Write-Host "无法确定 QoderCN 版本，跳过版本检查" -ForegroundColor Yellow
+} elseif ($ideVersion -eq [version]'1.39.1') {
+    Write-Host "QoderCN 1.39.1 存在 Electron 问题，已中止安装" -ForegroundColor Red
+    Write-Host "请先升级到 1.39.2 或更高版本，再重新运行本脚本。" -ForegroundColor Yellow
+    exit 1
+} elseif ($ideVersion -lt [version]'1.39.1') {
+    Write-Host "QoderCN $ideVersion 低于 1.39.1，未验证过，继续安装" -ForegroundColor Yellow
+}
+
 if (-not (Test-Path $vsix)) {
     Write-Host "找不到 $vsix" -ForegroundColor Red
     Write-Host "先在本目录跑：npm install && npm run package" -ForegroundColor Yellow

@@ -1,17 +1,34 @@
+import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
 
 import type { BoardColumn } from '../models/Board';
+import { buildAuthorizationHeader } from './JiraOAuthSigner';
 import { loadScrumBuddyConfig } from './ScrumBuddyConfig';
 import { createIntranetHttpsAgent, intranetTlsOptions } from './intranetTls';
+
+/**
+ * OAuth 1.0a 凭据，由 `sb-agent authorize` 写入，与 scrum-buddy 共用同一份。
+ *
+ * token 是按用户签发的：谁的 token 就代表谁的 Jira 权限，不能互相借用。
+ */
+interface ScrumBuddyJiraOAuth {
+    consumerKey: string;
+    /** PEM 私钥路径，用于 RSA-SHA1 签名 */
+    privateKeyPath: string;
+    token: string;
+    tokenSecret?: string;
+}
 
 /** ScrumBuddy 配置中的 Jira 部分 */
 interface ScrumBuddyJiraConfig {
     baseUrl: string;
-    username: string;
-    password: string;
+    username?: string;
+    password?: string;
     defaultBoardId?: number;
+    /** 有 token 时优先走 OAuth，不再发送密码 */
+    oauth?: ScrumBuddyJiraOAuth;
 }
 
 /** Jira board 的列定义与 rank 字段 */
@@ -59,13 +76,30 @@ export class JiraApiError extends Error {
         }
     }
 
+    /** 400 的 errorMessages 与字段级 errors：横幅直接带出原因，不再只甩状态码 */
+    public get badRequestDetail(): string {
+        try {
+            const parsed = JSON.parse(this.body) as { errorMessages?: string[]; errors?: Record<string, string> };
+            return [...(parsed.errorMessages ?? []), ...Object.values(parsed.errors ?? {})].join('；');
+        } catch {
+            return '';
+        }
+    }
+
     /** 给人看的错误摘要，401/403 指到具体配置文件与字段 */
     public get readable(): string {
         if (this.status === 401) {
-            return 'Jira 认证失败：检查 ~/.scrumbuddy/config.json 的 jira.username / jira.password';
+            return (
+                'Jira 认证失败：检查 ~/.scrumbuddy/config.json 的 jira.oauth（token 可能已失效），' +
+                '或 jira.username / jira.password'
+            );
         }
         if (this.status === 403) {
             return 'Jira 拒绝访问：当前账号没有该 board 或该 issue 的权限（~/.scrumbuddy/config.json 的 jira.username）';
+        }
+        if (this.status === 400) {
+            const detail = this.badRequestDetail;
+            return detail ? `Jira 请求失败 400：${detail}` : 'Jira 请求失败 400';
         }
         if (this.status >= 500) {
             return `Jira 服务端错误 ${this.status}，稍后重试`;
@@ -81,6 +115,8 @@ export class JiraApiError extends Error {
  */
 export class JiraService {
     private config: ScrumBuddyJiraConfig | null = null;
+    /** 私钥只在路径变化时重读：看板每轮几十个请求，不能每次都读盘 */
+    private oauthKey: { path: string; pem: string } | null = null;
     // 内网自签证书
     private readonly httpsAgent = createIntranetHttpsAgent();
 
@@ -172,13 +208,82 @@ export class JiraService {
     }
 
     /**
+     * 把 issue 指派给当前凭据对应的用户。
+     *
+     * 看板其余部分只读，这是唯一一个写操作：卡片上写着「未指派」时，
+     * 为了改这一项去网页里点两下太远了。
+     * Jira Server 的 assignee 字段收的是用户名（name），不是 Cloud 的 accountId。
+     */
+    public async assignToMe(issueKey: string): Promise<{ name: string; displayName: string }> {
+        const me = await this.getMyself();
+        if (!me.name) {
+            throw new Error(
+                '取不到当前 Jira 用户（/rest/api/2/myself），无法指派；检查 ~/.scrumbuddy/config.json 的 jira.username'
+            );
+        }
+        try {
+            await this.request<void>(
+                'PUT',
+                `/rest/api/2/issue/${encodeURIComponent(issueKey)}/assignee`,
+                { name: me.name },
+                15000
+            );
+        } catch (error) {
+            if (error instanceof JiraApiError) {
+                const detail = Object.values(error.fieldErrors).join('；');
+                throw new Error(`指派 ${issueKey} 失败——${detail || error.readable}`);
+            }
+            throw error;
+        }
+        return me;
+    }
+
+    /**
+     * OAuth 优先，没配置时回退 Basic。
+     *
+     * 配了 OAuth 但私钥缺失时直接报错：静默回退会让人以为在走 OAuth，
+     * 实际又在刷密码登录，那正是把账号推进 CAPTCHA 的路径。
+     *
+     * 签名必须用最终 URL（含 query），JSON body 不参与签名。
+     */
+    private authorizationFor(method: string, url: URL): string {
+        const oauth = this.config?.oauth;
+        if (oauth?.token) {
+            return buildAuthorizationHeader(method, url.toString(), {
+                consumerKey: oauth.consumerKey,
+                privateKeyPem: this.privateKeyPem(oauth.privateKeyPath),
+                extra: { oauth_token: oauth.token },
+            });
+        }
+        const credentials = Buffer.from(`${this.config?.username ?? ''}:${this.config?.password ?? ''}`).toString(
+            'base64'
+        );
+        return `Basic ${credentials}`;
+    }
+
+    private privateKeyPem(path: string): string {
+        if (this.oauthKey?.path === path) {
+            return this.oauthKey.pem;
+        }
+        if (!path || !fs.existsSync(path)) {
+            throw new Error(
+                `Jira OAuth 私钥不存在：${path || '(jira.oauth.privateKeyPath 未配置)'}。` +
+                    '运行 `sb-agent keygen` 生成，或修正 ~/.scrumbuddy/config.json 里的路径。'
+            );
+        }
+        const pem = fs.readFileSync(path, 'utf-8');
+        this.oauthKey = { path, pem };
+        return pem;
+    }
+
+    /**
      * 统一请求入口：与 GitLabService 同构的双协议实现。
      * http 实例以前被 `port || 80` 写死过，https 站点直接失效。
      *
-     * 看板是只读的：这里不发 POST，改状态去 Jira 网页。
+     * 写操作只有 assignee 一个（见 assignToMe），其余一律只读。
      */
     private request<T>(
-        method: 'GET' | 'POST',
+        method: 'GET' | 'POST' | 'PUT',
         urlPath: string,
         body?: unknown,
         timeoutMs = 10000
@@ -198,7 +303,7 @@ export class JiraService {
 
             const isHttps = url.protocol === 'https:';
             const transport = isHttps ? https : http;
-            const auth = Buffer.from(`${this.config.username}:${this.config.password}`).toString('base64');
+            const authorization = this.authorizationFor(method, url);
             const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body), 'utf-8');
 
             const options: https.RequestOptions = {
@@ -207,7 +312,7 @@ export class JiraService {
                 path: url.pathname + url.search,
                 method,
                 headers: {
-                    Authorization: `Basic ${auth}`,
+                    Authorization: authorization,
                     Accept: 'application/json',
                     ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) } : {}),
                 },

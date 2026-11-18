@@ -30,7 +30,6 @@ function card(overrides: Partial<BoardCard> & { key: string }): BoardCard {
         stage: 'merged',
         buildFailed: true,
         buildChannel: 'full',
-        mergedDaysAgo: 4,
         mrs: [],
         evidence: ['derived'],
         url: 'https://jira/browse/' + overrides.key,
@@ -410,7 +409,7 @@ test('a closing window hands its own placeholder back, and only its own', () => 
 test('derived state is never persisted', () => {
     withStore((store) => {
         const columns = store.columnsOf('issue').map((column) => column.name);
-        for (const derived of ['stage', 'buildFailed', 'buildChannel', 'mergedDaysAgo', 'evidence', 'revision']) {
+        for (const derived of ['stage', 'buildFailed', 'buildChannel', 'evidence', 'revision']) {
             assert.equal(columns.includes(derived), false, `${derived} must not be a column`);
         }
         assert.equal(store.columnsOf('build').map((column) => column.name).includes('sha'), true);

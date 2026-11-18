@@ -6,7 +6,9 @@
   --line: var(--vscode-panel-border, #e3e3e6);
   --fg: var(--vscode-foreground, #1f2328);
   --muted: var(--vscode-descriptionForeground, #6b7280);
-  --accent: var(--vscode-focusBorder, #3a5a7f);
+  /* 强调色优先取链接色：focusBorder 在部分主题里是接近背景的深色，
+     用它当文字/圆点色会「隐形」（全选/清空 曾因此看不见）。textLink 保证可读。 */
+  --accent: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #3a5a7f));
   --surface: var(--vscode-editorWidget-background, #ffffff);
 }
 
@@ -43,7 +45,6 @@ body.vscode-high-contrast-light .sprint-name {
 /* 项目范围：只读标签，交互在设置里 */
 .project-label { font-size: 12px; color: var(--muted); }
 .spacer { flex: 1 1 auto; }
-.toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
 .stamp { font-size: 12px; color: var(--muted); }
 .stamp.stale { color: #b45309; }
 .btn {
@@ -52,11 +53,111 @@ body.vscode-high-contrast-light .sprint-name {
 }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: #1c7ed6; border-color: #1c7ed6; color: #fff; }
+/* 次要实心按钮：默认 .btn 的背景与面板同色、看起来像没背景；
+   用 VS Code 次要按钮色给「指派给我」这类动作一个看得见的底。 */
+.btn.secondary {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border-color: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ffffff);
+}
+.btn.secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+  border-color: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
 .btn.danger { background: transparent; border-color: #ef4444; color: #ef4444; }
 /* GitLab 品牌橙：深色文字保证对比度（白字在 #FC6D26 上只有 ~2.9:1） */
 .btn.gitlab { background: #fc6d26; border-color: #e24329; color: #2b1200; font-weight: 600; }
 .btn.gitlab:hover { background: #f4601f; border-color: #cf3b23; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
+/* 菜单开着时按钮看起来是「按下」的，和浮层对应上 */
+.btn.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+
+/* 阶段筛选生效时顶栏的提示条：列出勾中的徽章 + 一键还原 */
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  font-size: 11px; max-width: 100%;
+}
+.filter-chip-label { color: var(--muted); flex: none; }
+.filter-chip .stage { flex: none; }
+.filter-chip-none { color: #b42318; }
+.filter-chip-more { color: var(--muted); cursor: help; }
+.filter-chip-clear {
+  flex: none; width: 16px; height: 16px; padding: 0; margin-left: 2px;
+  border: none; border-radius: 50%; background: transparent; color: var(--muted);
+  font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+}
+.filter-chip-clear:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--fg); }
+
+/* ---------- 视图菜单 ---------- */
+.view-menu-wrap { position: relative; }
+.view-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+  min-width: 168px; padding: 4px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.view-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 4px;
+  font-size: 12px; cursor: pointer; user-select: none; white-space: nowrap;
+}
+.view-item:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.view-item input { margin: 0; }
+.view-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+/* 二级菜单：悬停 / 聚焦展开；留一点重叠避免鼠标跨过缝隙时丢掉 hover */
+.view-sub { position: relative; }
+.view-sub-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 4px 8px; border-radius: 4px; font-size: 12px;
+  cursor: pointer; user-select: none; white-space: nowrap;
+}
+.view-sub-row:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.view-submenu {
+  position: absolute; top: -4px; left: 100%; z-index: 31;
+  min-width: 148px; padding: 4px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.view-empty { padding: 4px 8px; font-size: 12px; color: var(--muted); }
+.chev { font-size: 10px; color: var(--muted); }
+/* 视图按钮上的小圆点：菜单关着也能看出「有筛选正在生效」 */
+.view-dot {
+  display: inline-block; width: 6px; height: 6px; margin-left: 5px;
+  border-radius: 50%; background: var(--accent); vertical-align: middle;
+}
+.view-sub-meta { display: inline-flex; align-items: center; gap: 6px; }
+.view-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.view-count.on { color: var(--accent); font-weight: 600; }
+.view-count.zero { opacity: .45; }
+/* 没有 GitLab 凭据时阶段筛选无从谈起：整行置灰，不展开二级菜单 */
+.view-sub-row.disabled { opacity: .5; cursor: not-allowed; }
+.view-sub-row.disabled:hover { background: transparent; }
+/* 交付阶段菜单：比列菜单宽，要放得下「已 Approve 待合入」+ 计数。
+   修饰类用 stage-menu 而非 stages：卡片徽章容器 .stages 是 display:flex 的换行行，
+   若同名会把这层竖向菜单也变成 flex 行，全选 / 清空 头被挤到第一项旁边甚至裁掉。 */
+.view-submenu.stage-menu { min-width: 216px; }
+.view-actions {
+  display: flex; gap: 4px; padding: 2px 4px 4px;
+  border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.view-link {
+  border: none; background: transparent; color: var(--accent);
+  font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 4px; cursor: pointer;
+}
+.view-link:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* 禁用态（如已全选时的「全选」）用可读的灰字，而不是把链接色压到几乎看不见 */
+.view-link:disabled { color: var(--muted); opacity: .8; cursor: default; }
+.stage-item { gap: 6px; }
+/* 色块与卡片徽章共用 .s-* 配色，菜单里一眼能对上 */
+.stage-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; border: 1px solid transparent; }
+.stage-name { flex: 1 1 auto; }
+.stage-item .view-count { margin-left: auto; }
+.view-note {
+  padding: 5px 8px 2px; margin-top: 4px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--muted); white-space: normal; line-height: 1.4;
+}
 
 /* ---------- 横幅 ---------- */
 .banners { display: flex; flex-direction: column; gap: 4px; padding: 0 14px; }
@@ -100,6 +201,8 @@ body.vscode-high-contrast-light .sprint-name {
 }
 .card:active { cursor: pointer; }
 .row1 { display: flex; align-items: center; gap: 6px; }
+/* 第一行的优先级图标跟类型徽章同高：16px 会把行高撑大，和 key 也对不齐 */
+.row1 .prio-icon { width: 14px; height: 14px; background-size: 14px 14px; }
 .type {
   width: 14px; height: 14px; border-radius: 3px; flex: none;
   background: #2f9e44; color: #fff; font-size: 10px; line-height: 14px; text-align: center;
@@ -122,14 +225,39 @@ body.vscode-high-contrast-light .sprint-name {
   margin: 5px 0 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   overflow: hidden; overflow-wrap: anywhere;
 }
-.row2 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* 详细模式最后一行：状态徽章靠左、Epic 靠右（.epic 的 margin-left: auto） */
+.row2 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 徽章已在行内，去掉原本作为卡片末行时的顶部间距；min-width 允许它在窄卡片里收缩换行 */
+.row2 .stages { margin-top: 0; min-width: 0; }
 .prio { color: #e03131; font-size: 11px; }
 .prio.low { color: var(--muted); }
+/* 优先级图标：直接搬 Jira classic 方案的 16×16 PNG，颜色/形状与 Jira 界面一致。
+   路径相对本文件（media/board.css）解析，CSP 的 img-src 已放行 cspSource。 */
+.prio-icon {
+  width: 16px; height: 16px; flex: none;
+  background-repeat: no-repeat; background-position: center; background-size: 16px 16px;
+}
+.prio-icon.blocker { background-image: url("icons/priorities/blocker.png"); }
+.prio-icon.critical { background-image: url("icons/priorities/critical.png"); }
+.prio-icon.major { background-image: url("icons/priorities/major.png"); }
+.prio-icon.minor { background-image: url("icons/priorities/minor.png"); }
+.prio-icon.trivial { background-image: url("icons/priorities/trivial.png"); }
 .epic {
+  margin-left: auto; min-width: 0;
   background: #f6c85f; color: #5b4300; border-radius: 3px; font-size: 11px;
   padding: 1px 6px; max-width: 65%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cmt { margin-left: auto; font-size: 11px; color: var(--muted); }
+/* 精简：卡片本身变横向一行 —— 徽章贴在右端，不再有标题与信息行。
+   详细模式里徽章在最后一行（与 Epic 同行），精简模式下移到卡片末尾。 */
+.card.compact { display: flex; align-items: center; gap: 6px; padding: 6px 10px; }
+.card.compact .card-main { flex: 1 1 auto; min-width: 0; }
+/* 精简版 row1 里没有右对齐的节点（头像只在详细模式出现），
+   徽章靠右完全由 card-main 撑满剩余宽度 + stages 的 margin-left: auto 完成 */
+.card.compact .row1 { overflow: hidden; }
+/* key 是唯一可收缩的部分：徽章（含构建失败）必须完整可见 */
+.card.compact .key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.compact .stages { margin-top: 0; margin-left: auto; flex: none; flex-wrap: nowrap; }
+.card.compact .stage { white-space: nowrap; flex: none; }
 
 /* ---------- 阶段徽章 ---------- */
 .stages { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
@@ -139,8 +267,12 @@ body.vscode-high-contrast-light .sprint-name {
 .s-appr { background: #7c3aed; color: #fff; }
 .s-merged { background: #f59e0b; color: #3d2800; }
 .s-built { background: #10b981; color: #fff; }
+/* 返工中：上一轮已构建、Jira 退回开发，本轮还没有新 MR */
+.s-rework { background: #ea580c; color: #fff; }
 .s-fail { background: #ef4444; color: #fff; }
 .s-unk { background: transparent; color: #b42318; border-color: #ef4444; border-style: dashed; }
+/* 「无徽章」选项：卡片上本来就不出徽章，用中性描边表示「没有」而不是某个阶段 */
+.s-nobadge { background: transparent; color: var(--muted); border-color: var(--line); }
 
 /* ---------- 空态 / 错误态 ---------- */
 .placeholder {
@@ -161,7 +293,12 @@ dialog::backdrop { background: rgba(20, 24, 32, .35); }
   display: flex; gap: 8px; align-items: center;
 }
 .dlg-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }
-.dlg-foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
+.dlg-foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+/* 页脚按钮不参与收缩：按钮文字换行会比按钮本身还难看 */
+.dlg-foot .btn { flex: none; white-space: nowrap; }
+/* 「指派给我」与「在 Jira 中打开」是一组，永远同一行；GitLab 按钮太长时整组换到下一行，
+   而不是把这两个按钮挤得各自折成两行 */
+.dlg-actions { display: flex; gap: 8px; flex: none; }
 .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
 .field input, .field select, .field textarea {
   width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px;
@@ -170,8 +307,6 @@ dialog::backdrop { background: rgba(20, 24, 32, .35); }
 .field .err { color: #ef4444; font-size: 11px; margin-top: 3px; }
 .req { color: #ef4444; }
 .warn { background: #fff7e6; border: 1px solid #f5c06a; border-radius: 6px; padding: 8px 10px; font-size: 12px; color: #8a5a00; }
-/* 合入后长时间未推进：只出现在详情，不占卡面 */
-.stall { background: #fff7e6; border: 1px solid #f5c06a; border-radius: 6px; padding: 6px 10px; font-size: 12px; color: #8a5a00; font-weight: 600; }
 .warn ul { margin: 6px 0 0; padding-left: 18px; }
 .hint { font-size: 12px; color: var(--muted); }
 
@@ -187,11 +322,20 @@ dialog::backdrop { background: rgba(20, 24, 32, .35); }
 .modal-layer dialog { margin: 0; max-height: 86vh; }
 .detail-backdrop { position: fixed; inset: 0; z-index: 35; background: rgba(20, 24, 32, .18); }
 .detail {
-  position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw; z-index: 40;
+  position: fixed; top: 0; right: 0; width: 420px; max-width: 92vw; z-index: 40;
+  max-height: 100vh;
   background: var(--surface); border-left: 1px solid var(--line); box-shadow: -8px 0 30px rgba(0, 0, 0, .12);
   display: flex; flex-direction: column;
 }
-.detail .dlg-body { flex: 1 1 auto; }
+/* 高度跟着内容走：内容短就收起、不留底部空白；超出视口才让 body 收缩出滚动条。
+   必须覆盖 .dlg-body 的 60vh 上限，否则 body 被截断、footer 下方留白还多一条滚动条。 */
+.detail .dlg-head, .detail .dlg-foot { flex: none; }
+.detail .dlg-body { flex: 0 1 auto; min-height: 0; max-height: none; }
+/* 滚动条用面板自己的配色：细、圆角、悬停提亮，不拿浏览器默认灰条 */
+.dlg-body::-webkit-scrollbar { width: 8px; }
+.dlg-body::-webkit-scrollbar-track { background: transparent; }
+.dlg-body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+.dlg-body::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 .detail h4 { margin: 10px 0 4px; font-size: 12px; color: var(--muted); text-transform: none; }
 .fact { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
 .fact.highlight { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }

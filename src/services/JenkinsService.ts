@@ -102,15 +102,16 @@ export class JenkinsService {
     public async getRecentBuilds(jobPath: string, targetBranch: string, count = 20): Promise<BuildFact[]> {
         const base = (this.config?.baseUrl ?? '').replace(/\/+$/, '');
         // lastBuiltRevision.SHA1 是该构建 checkout 的 commit：祖先判定的右边。
-        // 拿不到时字段缺失，调用方退回时间窗。
+        // 拿不到时字段缺失，调用方退回时间窗。duration 用来算结束时间。
         const url = new URL(
-            `${base}${this.jobUrl(jobPath)}/api/json?tree=builds[number,result,timestamp,actions[lastBuiltRevision[SHA1]]]{0,${count}}`
+            `${base}${this.jobUrl(jobPath)}/api/json?tree=builds[number,result,timestamp,duration,actions[lastBuiltRevision[SHA1]]]{0,${count}}`
         );
         const body = await this.request<{
             builds?: Array<{
                 number: number;
                 result: string | null;
                 timestamp: number;
+                duration?: number;
                 actions?: Array<{ lastBuiltRevision?: { SHA1?: string } }>;
             }>;
         }>(url);
@@ -119,6 +120,7 @@ export class JenkinsService {
             number: build.number,
             result: build.result ?? null,
             timestamp: build.timestamp,
+            durationMs: typeof build.duration === 'number' ? build.duration : undefined,
             branch: targetBranch,
             url: this.buildUrl(jobPath, build.number),
             sha: buildShaOf(build.actions),

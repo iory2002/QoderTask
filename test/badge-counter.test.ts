@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import type { BoardCard } from '../src/models/Board';
 import type { MrCard, MrReviewState } from '../src/models/MrBoard';
-import { countJiraBadges, countMrBadges } from '../src/services/BadgeCounter';
+import { countJiraBadges, countMrBadges, jiraBadgeLabels, mrBadgeLabels } from '../src/services/BadgeCounter';
 
 function card(overrides: Partial<BoardCard> & { key: string }): BoardCard {
     return {
@@ -26,7 +26,6 @@ function card(overrides: Partial<BoardCard> & { key: string }): BoardCard {
         stage: null,
         buildFailed: false,
         buildChannel: 'none',
-        mergedDaysAgo: null,
         mrs: [],
         evidence: [],
         url: '',
@@ -106,6 +105,13 @@ test('gitlab badge: review queue is the default number, own unreviewed MRs the o
 
     assert.deepEqual(countMrBadges(queue, mine, 'reviewQueue'), { primary: 2, secondary: 1 });
     assert.deepEqual(countMrBadges(queue, mine, 'awaitingOthers'), { primary: 1, secondary: 2 });
+});
+
+test('badge labels follow the mode so the sidebar numbers never swap', () => {
+    assert.deepEqual(jiraBadgeLabels('development'), ['开发中', '测试中']);
+    assert.deepEqual(jiraBadgeLabels('testing'), ['测试中', '开发中']);
+    assert.deepEqual(mrBadgeLabels('reviewQueue'), ['待我审', '等别人审']);
+    assert.deepEqual(mrBadgeLabels('awaitingOthers'), ['等别人审', '待我审']);
 });
 
 test('gitlab badge keeps approvals-unknown MRs in the count', () => {

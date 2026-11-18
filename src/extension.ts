@@ -7,6 +7,8 @@ import { BoardPanel } from './board/BoardPanel';
 import { BoardState } from './board/BoardState';
 import { MrBoardPanel } from './board/MrBoardPanel';
 import { MrBoardState } from './board/MrBoardState';
+import { readBadgeConfig } from './board/config';
+import { jiraBadgeLabels, mrBadgeLabels } from './services/BadgeCounter';
 import { GitLabService } from './services/GitLabService';
 import { JiraService } from './services/JiraService';
 import { buildReviewRequest } from './services/MrReviewHandoff';
@@ -19,7 +21,7 @@ let storageRoot: vscode.Uri | undefined;
 export function activate(context: vscode.ExtensionContext) {
     try {
         const factsPath = ensureFactsPath(context.globalStorageUri.fsPath);
-        boardState = new BoardState(factsPath);
+        boardState = new BoardState(factsPath, context.globalState);
         mrBoardState = new MrBoardState(factsPath);
         storageRoot = context.storageUri ?? context.globalStorageUri;
 
@@ -33,7 +35,11 @@ export function activate(context: vscode.ExtensionContext) {
                 onRefresh: (force) => boardState?.refresh(force),
                 // 纯视图切换：不重新拉数据，由 BoardState 直接重发当前快照
                 onScopeChange: (scope) => boardState?.setScope(scope),
+                onDensityChange: (density) => boardState?.setDensity(density),
+                onStageFilterChange: (stages) => boardState?.setStages(stages),
+                onVisibleColumnsChange: (ids) => boardState?.setVisibleColumns(ids),
                 onOpenJira: (key) => openJiraIssue(key),
+                onAssignToMe: (key) => boardState?.assignToMe(key),
                 onOpenExternal: (url) => openExternal(url),
                 onVisibilityChanged: (visible) => boardState?.setVisible(visible),
                 onDisposed: () => boardState?.setVisible(false),
@@ -103,7 +109,8 @@ export function activate(context: vscode.ExtensionContext) {
         const jiraEntry = new BoardEntryTree({
             viewType: 'jiraBoard.entry',
             title: 'Jira Board',
-            labels: ['开发中', '测试中'],
+            // 标签跟着角标口径走：mode 改成 testing 时主数字是「测试中」，标签必须同步调换
+            labels: () => jiraBadgeLabels(readBadgeConfig().jira.mode),
             openCommand: 'todoPanel.openBoard',
             counts: () => boardState?.getBadgeCounts() ?? { primary: 0, secondary: 0 },
             settingsCommand: 'pcBoard.openJiraSettings',
@@ -113,7 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
         const gitlabEntry = new BoardEntryTree({
             viewType: 'gitlabBoard.entry',
             title: 'GitLab Board',
-            labels: ['待我审', '等别人审'],
+            labels: () => mrBadgeLabels(readBadgeConfig().gitlab.mode),
             openCommand: 'todoPanel.openMrBoard',
             counts: () => mrBoardState?.getBadgeCounts() ?? { primary: 0, secondary: 0 },
             settingsCommand: 'pcBoard.openGitlabSettings',
@@ -139,6 +146,24 @@ export function activate(context: vscode.ExtensionContext) {
         // 面板没打开也要有角标，所以激活即开表（不可见时降频）
         boardState.start();
         mrBoardState.start();
+
+        // 隐藏列是纯展示设置：改完立刻重发一帧，不等下一轮轮询，也不重新取数。
+        // 菜单自己写的那次变更会被吞掉（界面已经画好了），只有外部改动才回帧。
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeConfiguration((event) => {
+                if (event.affectsConfiguration('pcBoard.hiddenColumns')) {
+                    boardState?.hiddenColumnsSettingChanged();
+                }
+                // 角标口径同样是纯本地计算：mode / onlyMine / 状态名单变了，
+                // 立刻用已有卡片重算并换标签，不必等下一轮 fetch。
+                if (event.affectsConfiguration('pcBoard.badge')) {
+                    boardState?.recomputeBadge();
+                    mrBoardState?.recomputeBadge();
+                    jiraEntry.refresh();
+                    gitlabEntry.refresh();
+                }
+            })
+        );
 
         context.subscriptions.push({
             dispose: () => {

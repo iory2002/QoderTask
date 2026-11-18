@@ -45,7 +45,6 @@ export class MrBoardState {
     private readonly store: FactStore | null;
     /** 库的病况（损坏重建 / 更高版本只读）：只在板内说一次 */
     private readonly storeNotice: BoardNotice | null;
-    private ephemeralNotice: BoardNotice | null = null;
     /** 这一轮是否由用户手动触发（忽略新鲜度去抢位） */
     private manualRequest = false;
     private retryBudget = 0;
@@ -96,6 +95,15 @@ export class MrBoardState {
             this.publish(force);
             this.updateBadge();
         }
+    }
+
+    /**
+     * 设置里的 pcBoard.badge.gitlab.mode 变了。
+     *
+     * 两条腿的数字都已经在内存里，mode 只是决定哪个上图标：原地重算，不发请求。
+     */
+    public recomputeBadge(): void {
+        this.updateBadge();
     }
 
     /** 角标口径与「只看我的」无关：MR 天然按 reviewer / author 两条腿取数 */
@@ -289,13 +297,13 @@ export class MrBoardState {
         }
     }
 
-    /** 抢不到占位：提示 + 3 秒后重试，最多 3 次 */
+    /**
+     * 抢不到占位：静默重试，最多 3 次。
+     *
+     * 不提示用户：多窗口竞争是我们自己的实现细节，库里已经有上一次成功的数据，
+     * 画面照常显示；弹一条用户无法操作的黄条只是噪声。
+     */
     private noteBusy(): void {
-        this.ephemeralNotice = {
-            level: 'warn',
-            message: '另一个窗口正在刷新',
-            hint: '同一个事实库只让一个窗口去取数；3 秒后自动重试',
-        };
         if (this.retryBudget >= 3) {
             return;
         }
@@ -489,7 +497,6 @@ export class MrBoardState {
             this.freshness = { lastSuccessAt: Date.now(), stale: false, error: null };
             this.notices = this.buildNotices();
             this.retryBudget = 0;
-            this.ephemeralNotice = null;
 
             console.log(
                 `[mr-board] scope=${config.repos.map((repo) => `${repo.gitlabProject}@${repo.targetBranch}`).join(' / ')}` +
@@ -622,9 +629,6 @@ export class MrBoardState {
         const notices: BoardNotice[] = [...this.loadNotices];
         if (this.storeNotice) {
             notices.push(this.storeNotice);
-        }
-        if (this.ephemeralNotice) {
-            notices.push(this.ephemeralNotice);
         }
         if (config.repos.length === 0) {
             notices.push({

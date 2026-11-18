@@ -561,7 +561,16 @@ export class FactStore {
                    seen_at = excluded.seen_at`
             );
             for (const build of builds) {
-                upsert.run(jobPath, build.number, build.result, build.timestamp, null, build.sha ?? null, build.url, now);
+                upsert.run(
+                    jobPath,
+                    build.number,
+                    build.result,
+                    build.timestamp,
+                    build.durationMs ?? null,
+                    build.sha ?? null,
+                    build.url,
+                    now
+                );
             }
 
             const overflow = this.db

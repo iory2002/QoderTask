@@ -13,6 +13,32 @@ try {
     $version = $pkg.version
     $vsix = Join-Path $root "todo-panel-$version.vsix"
 
+    # 机器上可能同时装新旧两个 IDE：新版在 "Qoder CN IDE"（带空格），旧版在 "QoderCN"
+    $cliCandidates = @(
+        "C:\Program Files\Qoder CN IDE\bin\code.cmd",
+        "C:\Program Files\QoderCN\bin\code.cmd"
+    )
+    $cli = $cliCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    # 0) 版本门禁：1.39.1 的 Electron 有已知问题，扩展装上去会报 Electron 错误
+    $ideVersion = $null
+    if ($cli) {
+        $firstLine = (& $cli --version | Select-Object -First 1)
+        if ("$firstLine" -match '^\d+\.\d+\.\d+') { $ideVersion = [version]$Matches[0] }
+    }
+    if (-not $ideVersion) {
+        Write-Host "==> 无法确定 QoderCN 版本，跳过版本检查" -ForegroundColor Yellow
+    } elseif ($ideVersion -eq [version]'1.39.1') {
+        Write-Host "==> QoderCN 1.39.1 存在 Electron 问题，已中止安装" -ForegroundColor Red
+        Write-Host "    该版本的 Electron 运行时会报错（扩展加载失败），装上也是坏的。" -ForegroundColor Yellow
+        Write-Host "    请先升级到 1.39.2 或更高版本，再重新运行 install.bat。" -ForegroundColor Yellow
+        exit 1
+    } elseif ($ideVersion -lt [version]'1.39.1') {
+        Write-Host "==> QoderCN $ideVersion 低于 1.39.1，未验证过，继续安装" -ForegroundColor Yellow
+    } else {
+        Write-Host "==> QoderCN $ideVersion，版本 OK" -ForegroundColor Green
+    }
+
     # 1) 构建 + 打包（compile 已包含 tsc、webview 类型检查与 esbuild，package 还会校验 media/board.js）
     Write-Host "==> npm install" -ForegroundColor Cyan
     npm install
@@ -24,12 +50,6 @@ try {
     if (-not (Test-Path $vsix)) { throw "未生成 $vsix" }
 
     # 2) 安装：先试官方 CLI，失败则解压兜底
-    # 机器上可能同时装新旧两个 IDE：新版在 "Qoder CN IDE"（带空格），旧版在 "QoderCN"
-    $cliCandidates = @(
-        "C:\Program Files\Qoder CN IDE\bin\code.cmd",
-        "C:\Program Files\QoderCN\bin\code.cmd"
-    )
-    $cli = $cliCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     $installed = $false
 
     if ($cli) {

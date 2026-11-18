@@ -12,5 +12,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["webview/**/*", "src/models/**/*"]
+  "include": ["webview/**/*", "src/models/**/*", "src/board/stageFilter.ts", "src/board/cardScope.ts"]
 }

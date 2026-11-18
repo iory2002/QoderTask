@@ -29,6 +29,18 @@ function toSet(statuses: string[]): Set<string> {
 }
 
 /**
+ * 主数字 / 副数字的含义随 mode 调换，侧边栏的标签必须跟着一起换：
+ * 否则 `mode: 'testing'` 时图标上是「测试中」，条目里却写成「开发中 N · 测试中 N」，数字串位。
+ */
+export function jiraBadgeLabels(mode: JiraBadgeMode): [string, string] {
+    return mode === 'testing' ? ['测试中', '开发中'] : ['开发中', '测试中'];
+}
+
+export function mrBadgeLabels(mode: MrBadgeMode): [string, string] {
+    return mode === 'awaitingOthers' ? ['等别人审', '待我审'] : ['待我审', '等别人审'];
+}
+
+/**
  * Jira：未完成的工作按状态名分两组，同一张卡只归一组（先开发后测试）。
  *
  * 口径是「当前 sprint 里还没做完的我的卡」，与看板的列无关：

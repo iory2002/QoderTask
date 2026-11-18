@@ -1,5 +1,7 @@
+import { ALL_STAGE_FILTERS, STAGE_FILTERS, isAllStages } from '../../src/board/stageFilter';
 import type { BoardStatePayload } from '../../src/models/Board';
 import type { BoardModel } from '../useBoardModel';
+import { ViewMenu } from './ViewMenu';
 
 export function TopBar({ model }: { model: BoardModel }) {
     const state: BoardStatePayload | null = model.state;
@@ -14,18 +16,16 @@ export function TopBar({ model }: { model: BoardModel }) {
 
             {state ? <ProjectScope state={state} /> : null}
 
-            {state ? (
-                <label class="toggle">
-                    <input
-                        type="checkbox"
-                        checked={state.scope.onlyMine}
-                        onChange={(event) => {
-                            const target = event.currentTarget as HTMLInputElement;
-                            model.setScope(state.scope.projects, target.checked);
-                        }}
-                    />
-                    只看我的
-                </label>
+            {state ? <ViewMenu state={state} model={model} /> : null}
+
+            {state && state.hiddenColumnIds.length > 0 ? (
+                <span class="stamp" title="这些列被 pcBoard.hiddenColumns 隐藏；卡片仍然全量拉取，角标与计数不受影响">
+                    已隐藏 {state.hiddenColumnIds.length} 列
+                </span>
+            ) : null}
+
+            {state && state.capabilities.gitlab && !isAllStages(state.view.stages) ? (
+                <StageFilterChip state={state} model={model} />
             ) : null}
 
             <div class="spacer" />
@@ -39,6 +39,44 @@ export function TopBar({ model }: { model: BoardModel }) {
                 刷新
             </button>
         </header>
+    );
+}
+
+/**
+ * 阶段筛选生效时的顶栏提示：直接列出勾中的徽章，不用打开菜单就知道看板被筛过。
+ * 最多列 3 个，剩下的收成 +N（悬停看全名单）；点 × 一键还原成全部阶段。
+ */
+function StageFilterChip({ state, model }: { state: BoardStatePayload; model: BoardModel }) {
+    const selected = new Set(state.view.stages);
+    const chosen = STAGE_FILTERS.filter((option) => selected.has(option.id));
+    const shown = chosen.slice(0, 3);
+    const rest = chosen.slice(3);
+    return (
+        <span class="filter-chip" title="交付阶段筛选正在生效；卡片数据与角标不受影响">
+            <span class="filter-chip-label">阶段</span>
+            {chosen.length === 0 ? (
+                <span class="filter-chip-none">一个都没勾</span>
+            ) : (
+                shown.map((option) => (
+                    <span class={`stage ${option.cls}`} key={option.id} title={option.hint}>
+                        {option.label}
+                    </span>
+                ))
+            )}
+            {rest.length > 0 ? (
+                <span class="filter-chip-more" title={rest.map((option) => option.label).join('、')}>
+                    +{rest.length}
+                </span>
+            ) : null}
+            <button
+                class="filter-chip-clear"
+                title="显示全部阶段"
+                aria-label="清除阶段筛选"
+                onClick={() => model.setStages(ALL_STAGE_FILTERS)}
+            >
+                ×
+            </button>
+        </span>
     );
 }
 

@@ -31,7 +31,9 @@ export function cardFromIssue(
         statusName: row.statusName,
         columnName: columns.find((column) => column.statusIds.includes(row.statusId))?.name ?? '',
         epicKey: row.epicKey,
-        epicLabel: row.epicKey,
+        // 库里只有 epicKey：先不显示 chip，等 backfillEpicLabels 查到名称再补，
+        // 宁可晚一步出现，也不把 key 当名称显示。
+        epicLabel: null,
         rank: row.rank ?? '',
         assignee: row.assignee,
         // issue 表存的是 displayName；拿账号名比较会让「只看我的」在恢复后变空
@@ -44,7 +46,6 @@ export function cardFromIssue(
         stage: null,
         buildFailed: false,
         buildChannel: 'none',
-        mergedDaysAgo: null,
         mrs: [],
         evidence: [],
         url: urlOf(row.key),

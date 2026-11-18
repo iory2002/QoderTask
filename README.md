@@ -7,8 +7,9 @@
 ## 功能
 
 - **五列看板** — 列与列的 status 集合来自 `GET /rest/agile/1.0/board/{id}/configuration`，不在插件里写死。
-- **卡片** — 活跃 sprint ∩ 项目白名单，按 Jira Rank 升序；显示 key、标题、类型、优先级、Epic chip、评论数；子任务带「子」角标。默认「只看我的」，关掉后显示全量并带经办人头像。**「只看我的」与项目 chip 都是纯视图过滤**：数据始终一次全量拉取，切开关不会重新请求；只有点「刷新」才重新取数。
-- **交付阶段徽章** — `未提交` / `MR 待审` / `已 Approve 待合入` / `已合入待构建` / `已构建`，构建失败另挂 `Build failed`；取数失败显示 `无法判定`（绝不假装「未提交」）。MAGR3 / IB 不接代码托管，不出徽章。
+- **卡片** — 活跃 sprint ∩ 项目白名单，按 Jira Rank 升序；显示 key、标题、类型、优先级、Epic chip、评论数；子任务带「子」角标。默认「只看我的」（在顶栏「视图」菜单里切换），关掉后显示全量并带经办人头像。**「只看我的」与项目 chip 都是纯视图过滤**：数据始终一次全量拉取，切开关不会重新请求；只有点「刷新」才重新取数。
+- **视图菜单** — 顶栏「视图」：`只看我的`、`显示列`（二级菜单勾选要看的列，写回 `pcBoard.hiddenColumns`）、`详细 / 精简`。精简卡片只保留类型图标、key、子任务「子」、经办人头像与阶段徽章。全部是纯视图开关：不重新取数，角标与各类计数不变；`详细 / 精简` 记在全局偏好里。
+- **交付阶段徽章** — `未提交` / `MR 待审` / `已 Approve 待合入` / `已合入待构建` / `已构建`，构建失败另挂 `Build failed`；取数失败显示 `无法判定`（绝不假装「未提交」）。**阶段按「本轮」算**：一张卡关联多个 MR 时取最新那个，不取历史最高——返工时旧 MR 已合入并进过构建，新 MR 才是当前进度。Jira 状态退回开发（默认 `In Progress` / `Reopened` / `In Rework` / `Test Failed`）、上一轮确实已构建、而本轮还没有新 MR 时显示 `返工中`，不再显示上一轮的 `已构建`；详情里保留上一轮的 MR 与构建号。MAGR3 / IB 不接代码托管，不出徽章；**没有配置 GitLab 凭据时一律不出阶段徽章**（否则每张卡都是「无法判定」），详细 / 精简都一样。
 - **详情浮层** — 点卡片看阶段事实链：命中的 MR、批准人、合入时间、构建号与绝对时间、推导依据，以及「在 Jira 中打开」。
 - **只读，不改状态** — 看板不做拖拽：Jira 的 transition 大多带必填字段（screen），插件里填不了，硬做只会卡在半路。改状态请点卡片详情里的「在 Jira 中打开」。
 - **活动栏角标** — 两个图标各带一个数字：Jira 图标显示「开发中」或「测试中」的未完成卡数（设置里选），GitLab 图标显示「待我审」或「等别人审」的 MR 数。另一个数字在侧边栏条目里显示——一个活动栏图标只有一处数字位。
@@ -54,8 +55,10 @@
 "pcBoard.boardId": 23,
 "pcBoard.projects": ["NEX2"],
 "pcBoard.onlyMineByDefault": true,
+"pcBoard.hiddenColumns": [],
 "pcBoard.pollIntervalSec": 60,
-"pcBoard.buildCheckIssueTypes": ["Story", "Bug"],
+"pcBoard.buildCheckIssueTypes": ["Story", "Bug", "In-Sprint Bug"],
+"pcBoard.reworkStatuses": ["In Progress", "Reopened", "In Rework", "Test Failed"],
 "pcBoard.extraIssueKeys": [],
 "pcBoard.devMode": false,
 "pcBoard.repos": [
@@ -76,15 +79,21 @@
 
 **「有没有 repo 条目」就是阶段追踪开关**：没有条目的项目（例如 MAGR3 / IB）不计算阶段、不出徽章，也不告警。`jenkinsJobPath` 为 `null` 时阶段顶格在「已合入」，不会挂在等构建上。
 
+**隐藏不关心的列**：`pcBoard.hiddenColumns` 填要看板上隐藏的列名，例如 `["To Do", "In Progress"]`；大小写与空格不敏感，也可以填列 id。也能在看板顶栏「视图 → 显示列」里直接勾选（勾选结果就写回这个设置）。这是**纯展示开关**：卡片仍然全量拉取，活动栏角标、顶栏总数、列外状态计数都不变，隐藏 To Do / In Progress 不会改变「开发中」的数字。留空 = 显示看板的全部列；列名没匹配上时看板顶部会提示当前有哪些列。
+
 **项目白名单决定看板看到什么，也决定发不发请求**：默认只有 `NEX2`。白名单外的 repo 映射（例如 NEX 那条）会保留但**不发请求**，把项目加回 `pcBoard.projects` 即可重新生效。
 
-**只有写代码的类型才看构建**：默认 `Story` 与 `Bug`，其余类型（`Task`、`Sub-task`）不查 Jenkins，阶段顶格在「已合入」——它们不做构建，盯着构建会永远挂着。仓库里没有任何需要构建校验的卡片时，连 Jenkins 请求都不会发。类型名按大小写不敏感精确匹配，`In-Sprint Bug` 这类变体需要显式加进 `pcBoard.buildCheckIssueTypes`。
+**只有写代码的类型才看构建**：默认 `Story`、`Bug` 与 `In-Sprint Bug`（测试退回后开的子 bug）。其余类型（`Task`、`Sub-task`）不查 Jenkins，阶段顶格在「已合入」——它们不做构建，盯着构建会永远挂着。仓库里没有任何需要构建校验的卡片时，连 Jenkins 请求都不会发。类型名按大小写不敏感精确匹配；其他变体需要显式加进 `pcBoard.buildCheckIssueTypes`。
+
+**返工与子任务**：`pcBoard.reworkStatuses` 定义哪些 Jira 状态算「已退回开发」，默认 `In Progress`、`Reopened`、`In Rework`、`Test Failed`（大小写与首尾空格不敏感）。子任务只在**不写代码**时才继承父任务阶段；名字带 Bug 的类型（含作为子任务开的 `In-Sprint Bug`）一律按自己的 MR / 构建算，不会跟着 Story 显示「已构建」。因此修复 MR 的标题 / 描述 / 源分支要带上对应子 bug 的 key，否则它关联不到 MR，会停在「未提交」。
 
 **钉住还没进 sprint 的 issue（仅 dev）**：先在 `pcBoard.extraIssueKeys` 里填 key（如 `["NEX2-610"]`），再把 `pcBoard.devMode` 打开（在设置里，顶栏不提供开关），它才会绕开 sprint 与「只看我的」出现在看板上，阶段照常算。devMode 关掉后钉住名单直接失效，看板回到 `sprint ∩ 项目白名单` 的干净状态。
 
 `jenkinsJobPath` 用 `/` 分段，每段填**已经编码过一次**的 job 名（分支里的 `/` 写作 `%2F`），插件会再编码一次（URL 里是 `%252F`）。
 
 **活动栏角标**：`pcBoard.badge.jira.mode` 选 Jira 图标显示「开发中」还是「测试中」，`pcBoard.badge.gitlab.mode` 选 GitLab 图标显示「待我审」还是「等别人审」；两个数字都在侧边栏条目里显示。哪两组状态算未完成由 `pcBoard.badge.jira.developmentStatuses` / `pcBoard.badge.jira.testingStatuses` 决定，按状态名匹配、大小写不敏感；`pcBoard.badge.jira.onlyMine` 控制是否只算自己的。`pcBoard.badge.jira.pollIntervalSec` / `pcBoard.badge.gitlab.pollIntervalSec` 是两个角标在看板面板没打开时的刷新间隔（默认各 60 秒）。
+
+切 `mode` 只改显示口径：两组数字本来就是同一批卡片算出来的，改完设置角标与侧边栏标签立刻互换，**不会重新取数**，不用等下一轮轮询。改 `onlyMine` 或两组状态名单同理。
 
 ## 打开看板
 
@@ -106,7 +115,7 @@ npm run package     # 编译 + 校验 media/board.js + 打 vsix
 安装：
 
 ```powershell
-& "C:\Program Files\QoderCN\bin\code.cmd" --install-extension todo-panel-0.3.1.vsix --force
+& "C:\Program Files\QoderCN\bin\code.cmd" --install-extension todo-panel-1.0.1.vsix --force
 ```
 
 > 必须用 QoderCN 自己 `bin` 下的 **`code.cmd`**（它就是 IDE 的 CLI，内部以 `ELECTRON_RUN_AS_NODE` 跑 `resources/app/out/cli.js`）。

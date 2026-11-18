@@ -61,13 +61,7 @@ export function MrApp() {
                 </div>
             ) : null}
             {!firstLoad && state ? (
-                <Banners
-                    notices={state.notices}
-                    stale={state.freshness.stale}
-                    error={state.freshness.error}
-                    loading={state.loading}
-                    lastSuccessAt={state.freshness.lastSuccessAt}
-                />
+                <Banners notices={state.notices} />
             ) : null}
 
             {firstLoad ? (
